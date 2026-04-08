@@ -33,6 +33,8 @@ const Icon = {
   Globe:     () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>,
   GlobeOff:  () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="1" y1="1" x2="23" y2="23"/><path d="M10.68 10.68A3 3 0 0 0 12 15a3 3 0 0 0 2.32-4.68M6.09 6.09A10 10 0 0 0 2 12c0 5.52 4.48 10 10 10a10 10 0 0 0 5.91-1.91M22 12A10 10 0 0 0 12 2a10 10 0 0 0-1.91.18"/><line x1="2" y1="12" x2="22" y2="12"/></svg>,
   Bolt:      () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>,
+  Menu:      () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>,
+  X:         () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>,
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -222,7 +224,6 @@ function ModelPanel({ providerData, selectedProvider, selectedModel, apiKeys,
         </div>
       )}
 
-      {/* Groq badge — fast inference callout */}
       {selectedProvider === "groq" && (
         <div className="groq-badge">
           <Icon.Bolt /> Ultra-fast inference · Open source models
@@ -282,10 +283,6 @@ function WebSearchToggle({ enabled, onChange }) {
   );
 }
 
-// ── api.js queryStream update (inline helper for web_search_enabled) ──────────
-// NOTE: your services/api.js needs to pass web_search_enabled to the backend.
-// Updated queryStream signature: api.queryStream(question, provider, model, apiKey, mode, webSearchEnabled)
-
 // ── Main App ──────────────────────────────────────────────────────────────────
 export default function App() {
   const [messages,          setMessages]          = useState([{
@@ -304,6 +301,7 @@ export default function App() {
   const [ollamaOk,          setOllamaOk]          = useState(null);
   const [isDragging,        setIsDragging]        = useState(false);
   const [webSearchEnabled,  setWebSearchEnabled]  = useState(false);
+  const [sidebarOpen,       setSidebarOpen]       = useState(false);   // mobile drawer
 
   const messagesEndRef  = useRef(null);
   const fileInputRef    = useRef(null);
@@ -320,6 +318,14 @@ export default function App() {
   useEffect(() => { selectedModRef.current  = selectedModel;    }, [selectedModel]);
   useEffect(() => { apiKeysRef.current      = apiKeys;          }, [apiKeys]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+
+  // Close sidebar on route/resize to desktop
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 769px)");
+    const handle = (e) => { if (e.matches) setSidebarOpen(false); };
+    mq.addEventListener("change", handle);
+    return () => mq.removeEventListener("change", handle);
+  }, []);
 
   useEffect(() => {
     api.getProviders().then(data => {
@@ -378,7 +384,6 @@ export default function App() {
 
     if (!model) return;
 
-    // Allow sending without docs if web search is enabled in chat mode
     if (documents.length === 0 && !(useWebSearch && currMode === "chat")) return;
 
     setInput("");
@@ -402,7 +407,6 @@ export default function App() {
 
       for await (const event of api.queryStream(question, provider, model, apiKey, currMode, useWebSearch)) {
         if (event.searching) {
-          // Show the web-searching spinner in the bubble
           setMessages(prev => prev.map(m =>
             m.id === aiMsgId ? { ...m, isSearching: true, content: "..." } : m));
           isSearching = true;
@@ -464,10 +468,18 @@ export default function App() {
     (mode === "chat"  && (documents.length > 0 || webSearchEnabled) && input.trim())
   );
 
+  const closeSidebar = () => setSidebarOpen(false);
+
   return (
     <div className="app">
+      {/* ── Mobile overlay ──────────────────────────────────────────── */}
+      <div
+        className={`sidebar-overlay${sidebarOpen ? "" : " hidden"}`}
+        onClick={closeSidebar}
+      />
+
       {/* ── Sidebar ─────────────────────────────────────────────────── */}
-      <aside className="sidebar">
+      <aside className={`sidebar${sidebarOpen ? " sidebar--open" : ""}`}>
         <div className="sidebar__header">
           <div className="sidebar__logo">
             <div className="logo-icon"><Icon.Bot /></div>
@@ -475,6 +487,10 @@ export default function App() {
               <h1 className="sidebar__title">RAG Agent</h1>
               <p className="sidebar__sub">Multi-Provider AI</p>
             </div>
+            {/* Close btn (mobile only) */}
+            <button className="sidebar-close" onClick={closeSidebar} aria-label="Close sidebar">
+              <Icon.X />
+            </button>
           </div>
           <div className={`status-pill ${ollamaOk ? "status-pill--ok" : "status-pill--err"}`}>
             <span className="status-dot-sm"/>
@@ -492,10 +508,8 @@ export default function App() {
           onApiKeyChange={handleApiKeyChange}
         />
 
-        {/* Web Search Toggle */}
         <WebSearchToggle enabled={webSearchEnabled} onChange={setWebSearchEnabled} />
 
-        {/* Upload */}
         <div
           className={`upload-zone ${isDragging ? "upload-zone--drag" : ""} ${isUploading ? "upload-zone--loading" : ""}`}
           onClick={() => fileInputRef.current?.click()}
@@ -529,6 +543,17 @@ export default function App() {
 
       {/* ── Chat ──────────────────────────────────────────────────────── */}
       <main className="chat">
+        {/* Mobile top bar */}
+        <div className="chat__topbar">
+          <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
+            <Icon.Menu />
+          </button>
+          <span className="chat__topbar-title">RAG Agent</span>
+          <span className="chat__topbar-status">
+            {PROVIDERS[selectedProvider]?.icon} {selectedModel || "no model"}
+          </span>
+        </div>
+
         <div className="chat__messages">
           {messages.map(msg => <Message key={msg.id} msg={msg}/>)}
           <div ref={messagesEndRef}/>

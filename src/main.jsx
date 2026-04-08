@@ -4,7 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import './index.css'
 import App from './App.jsx'
 import User from './User.jsx'
-
+import FileConverter from './FileConverter.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -14,6 +14,7 @@ createRoot(document.getElementById('root')).render(
         {/* Main chat page */}
         <Route path="/"          element={<App />} />
         <Route path="/user"          element={<User />} />
+        <Route path="/converter"          element={<FileConverter />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
 
