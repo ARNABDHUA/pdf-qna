@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
-import { api } from "./services/api";
-import { useVoiceInput } from "./hooks/useVoiceInput";
+import { api } from "./services/Api";
+import { useVoiceInput } from "./hooks/UseVoiceInput";
 import "./User.css";
 
 // ── Provider metadata ─────────────────────────────────────────────────────────
