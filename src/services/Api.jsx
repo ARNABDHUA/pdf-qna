@@ -2,7 +2,7 @@
 // Updated to support: Groq provider + web_search_enabled flag
 
 const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
+// arnab
 export const api = {
   async getProviders() {
     const res = await fetch(`${BASE_URL}/providers`);

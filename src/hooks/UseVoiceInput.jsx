@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback } from "react";
-
+// arnab
 export function useVoiceInput({ onTranscript }) {
   const [isListening, setIsListening] = useState(false);
   const [error, setError] = useState(null);
