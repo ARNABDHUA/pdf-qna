@@ -1,7 +1,7 @@
 // services/api.js
 // Updated to support: Groq provider + web_search_enabled flag
 
-const BASE_URL = "https://pdf-qna-backend.onrender.com"|| "http://localhost:8000";
+const BASE_URL =  "http://localhost:8000" || "https://pdf-qna-backend.onrender.com";
 // arnab
 export const api = {
   async getProviders() {
