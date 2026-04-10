@@ -26,6 +26,7 @@
   --font-mono:   'JetBrains Mono', monospace;
   --font-ui:     'Syne', sans-serif;
   --sidebar-w:   300px;
+  --sidebar-collapsed-w: 64px;
 }
 
 html, body, #root {
@@ -49,22 +50,80 @@ html, body, #root {
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
-  gap: 20px;
-  padding: 24px 20px;
+  gap: 16px;
+  padding: 20px 16px;
   overflow-y: auto;
   overflow-x: hidden;
-  transition: transform 0.28s cubic-bezier(0.4,0,0.2,1), width 0.28s;
+  transition: width 0.28s cubic-bezier(0.4,0,0.2,1),
+              min-width 0.28s cubic-bezier(0.4,0,0.2,1),
+              padding 0.28s cubic-bezier(0.4,0,0.2,1),
+              transform 0.28s cubic-bezier(0.4,0,0.2,1);
   flex-shrink: 0;
   z-index: 20;
+}
+
+/* ── Collapsed sidebar (desktop only) ─────────────────────────────────────── */
+.sidebar--collapsed {
+  width: var(--sidebar-collapsed-w);
+  min-width: var(--sidebar-collapsed-w);
+  padding: 20px 10px;
+  gap: 12px;
+  align-items: center;
 }
 
 .sidebar::-webkit-scrollbar { width: 4px; }
 .sidebar::-webkit-scrollbar-track { background: transparent; }
 .sidebar::-webkit-scrollbar-thumb { background: var(--border-2); border-radius: 99px; }
 
-.sidebar__header { display: flex; flex-direction: column; gap: 12px; }
-.sidebar__logo { display: flex; align-items: center; gap: 12px; }
+/* ── Sidebar header ────────────────────────────────────────────────────────── */
+.sidebar__header {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+}
 
+.sidebar__logo {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sidebar__logo-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+}
+
+/* ── Collapse toggle button (desktop) ─────────────────────────────────────── */
+.sidebar-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 30px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  color: var(--text-3);
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+  flex-shrink: 0;
+}
+.sidebar-collapse-btn svg { width: 15px; height: 15px; }
+.sidebar-collapse-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-glow);
+}
+
+.sidebar--collapsed .sidebar-collapse-btn {
+  width: 40px;
+  border-radius: 50%;
+}
+
+/* ── Logo icon ─────────────────────────────────────────────────────────────── */
 .logo-icon {
   width: 40px; height: 40px;
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
@@ -74,6 +133,11 @@ html, body, #root {
   box-shadow: 0 0 20px var(--accent-glow);
 }
 .logo-icon svg { width: 20px; height: 20px; color: white; }
+
+.logo-icon--sm {
+  width: 36px; height: 36px;
+}
+.logo-icon--sm svg { width: 17px; height: 17px; }
 
 .sidebar__title { font-size: 18px; font-weight: 800; letter-spacing: -0.02em; }
 .sidebar__sub { font-size: 11px; color: var(--text-3); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; }
@@ -85,6 +149,123 @@ html, body, #root {
   margin-bottom: 8px;
 }
 .sidebar__label svg { width: 13px; height: 13px; }
+
+/* ── Status pill ───────────────────────────────────────────────────────────── */
+.status-pill {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 11px; font-family: var(--font-mono);
+  padding: 5px 10px; border-radius: 99px;
+  border: 1px solid var(--border); width: fit-content;
+}
+.status-dot-sm { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.status-pill--ok  { color: var(--green); border-color: rgba(52,211,153,0.2);  background: rgba(52,211,153,0.05); }
+.status-pill--ok .status-dot-sm  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.status-pill--err { color: var(--red);   border-color: rgba(248,113,113,0.2); background: rgba(248,113,113,0.05); }
+.status-pill--err .status-dot-sm { background: var(--red); }
+
+/* Status dot (collapsed mode) */
+.status-dot-centered {
+  width: 10px; height: 10px; border-radius: 50; border-radius: 50%;
+}
+.status-dot-centered--ok  { background: var(--green); box-shadow: 0 0 8px var(--green); }
+.status-dot-centered--err { background: var(--red); }
+
+/* ── Collapsed provider badge ──────────────────────────────────────────────── */
+.collapsed-provider-badge {
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+}
+
+/* ── Icon-only sidebar buttons (collapsed) ────────────────────────────────── */
+.sidebar-icon-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px;
+  background: var(--bg-3);
+  border: 1px solid var(--border-2);
+  border-radius: var(--radius);
+  color: var(--text-2);
+  cursor: pointer;
+  text-decoration: none;
+  transition: all 0.15s;
+  flex-shrink: 0;
+}
+.sidebar-icon-btn svg { width: 16px; height: 16px; }
+.sidebar-icon-btn:hover {
+  border-color: var(--btn-color, var(--accent));
+  color: var(--btn-color, var(--accent));
+  background: color-mix(in srgb, var(--btn-color, var(--accent)) 12%, transparent);
+}
+.sidebar-icon-btn--teal {
+  color: var(--teal);
+  border-color: rgba(45,212,191,0.4);
+  background: rgba(45,212,191,0.08);
+}
+
+.nav-links-collapsed {
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+  width: 100%;
+}
+
+/* ── Nav links (expanded) ──────────────────────────────────────────────────── */
+.nav-links {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.nav-link-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: var(--text);
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+  cursor: pointer;
+}
+.nav-link-card:hover {
+  border-color: var(--link-color, var(--accent));
+  background: color-mix(in srgb, var(--link-color, var(--accent)) 8%, var(--bg-3));
+  transform: translateX(2px);
+}
+
+.nav-link-card__icon {
+  width: 32px; height: 32px;
+  border: 1px solid;
+  border-radius: 8px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.nav-link-card__icon svg { width: 15px; height: 15px; }
+
+.nav-link-card__text {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column; gap: 1px;
+}
+.nav-link-card__label {
+  font-size: 12px; font-weight: 700; color: var(--text);
+  display: block;
+}
+.nav-link-card__desc {
+  font-size: 10px; color: var(--text-3); font-family: var(--font-mono);
+  display: block;
+}
+
+.nav-link-card__arrow {
+  color: var(--text-3);
+  display: flex; align-items: center;
+  opacity: 0.5;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.nav-link-card__arrow svg { width: 13px; height: 13px; }
+.nav-link-card:hover .nav-link-card__arrow {
+  opacity: 1;
+  transform: translateX(2px);
+}
 
 /* ── Mobile sidebar overlay & toggle ──────────────────────────────────────── */
 .sidebar-overlay {
@@ -124,19 +305,6 @@ html, body, #root {
   margin-left: auto;
 }
 .sidebar-close svg { width: 15px; height: 15px; }
-
-/* ── Status pill ───────────────────────────────────────────────────────────── */
-.status-pill {
-  display: flex; align-items: center; gap: 6px;
-  font-size: 11px; font-family: var(--font-mono);
-  padding: 5px 10px; border-radius: 99px;
-  border: 1px solid var(--border); width: fit-content;
-}
-.status-dot-sm { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.status-pill--ok  { color: var(--green); border-color: rgba(52,211,153,0.2);  background: rgba(52,211,153,0.05); }
-.status-pill--ok .status-dot-sm  { background: var(--green); box-shadow: 0 0 6px var(--green); }
-.status-pill--err { color: var(--red);   border-color: rgba(248,113,113,0.2); background: rgba(248,113,113,0.05); }
-.status-pill--err .status-dot-sm { background: var(--red); }
 
 /* ── Provider tabs ─────────────────────────────────────────────────────────── */
 .model-panel { display: flex; flex-direction: column; gap: 10px; }
@@ -259,6 +427,7 @@ html, body, #root {
   cursor: pointer;
   transition: all 0.2s;
   user-select: none;
+  width: 100%;
 }
 .web-search-toggle:hover { border-color: var(--teal); background: rgba(45,212,191,0.04); }
 .web-search-toggle--on {
@@ -668,24 +837,49 @@ html, body, #root {
 
 /* ── Mobile: ≤ 768px ───────────────────────────────────────────────────────── */
 @media (max-width: 768px) {
-
-  /* App stacks vertically — sidebar becomes a drawer */
   .app { flex-direction: column; }
 
-  /* Sidebar becomes an off-canvas drawer */
+  /* Collapse toggle hidden on mobile (uses hamburger instead) */
+  .sidebar-collapse-btn { display: none; }
+
+  /* Sidebar becomes an off-canvas drawer, always full-width */
   .sidebar {
     position: fixed;
     top: 0; left: 0; bottom: 0;
-    width: min(var(--sidebar-w), 85vw);
-    min-width: unset;
+    width: min(var(--sidebar-w), 85vw) !important;
+    min-width: unset !important;
     transform: translateX(-100%);
     border-right: 1px solid var(--border-2);
     gap: 16px;
-    padding: 20px 16px;
+    padding: 20px 16px !important;
     z-index: 20;
     box-shadow: var(--shadow);
+    /* Force expanded state on mobile even if collapsed on desktop */
+    align-items: flex-start;
   }
   .sidebar.sidebar--open { transform: translateX(0); }
+
+  /* Never collapse on mobile */
+  .sidebar--collapsed {
+    width: min(var(--sidebar-w), 85vw) !important;
+    min-width: unset !important;
+    padding: 20px 16px !important;
+    align-items: flex-start;
+  }
+
+  /* Force logo/title visible on mobile */
+  .sidebar--collapsed .sidebar__logo-collapsed { display: none; }
+  .sidebar--collapsed .sidebar__logo { display: flex !important; }
+  .sidebar--collapsed .model-panel { display: flex !important; }
+  .sidebar--collapsed .web-search-toggle { display: flex !important; }
+  .sidebar--collapsed .nav-links { display: flex !important; }
+  .sidebar--collapsed .nav-links-collapsed { display: none !important; }
+  .sidebar--collapsed .upload-zone { display: flex !important; }
+  .sidebar--collapsed .docs-section { display: flex !important; }
+  .sidebar--collapsed .collapsed-provider-badge { display: none !important; }
+  .sidebar--collapsed .status-dot-centered { display: none !important; }
+  .sidebar--collapsed .status-pill { display: flex !important; }
+  .sidebar--collapsed .sidebar-icon-btn:not(.sidebar-close) { display: none !important; }
 
   /* Overlay behind drawer */
   .sidebar-overlay { display: block; }

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { api } from "./services/Api";
 import { useVoiceInput } from "./hooks/UseVoiceInput";
+import { useNavigate } from "react-router-dom";
 import "./User.css";
 
 // ── Provider metadata ─────────────────────────────────────────────────────────
@@ -173,6 +174,7 @@ export default function User() {
   useEffect(() => { selectedProvRef.current = selectedProvider; }, [selectedProvider]);
   useEffect(() => { selectedModRef.current  = selectedModel;    }, [selectedModel]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
+  const navigate = useNavigate();
 
   useEffect(() => {
     api.getProviders().then(data => {
@@ -290,7 +292,13 @@ export default function User() {
         <div className="u-topbar__left">
           <div className="u-logo-icon"><UIcon.Bot /></div>
           <div>
-            <h1 className="u-topbar__title">AI Friday</h1>
+            <h1 
+      className="u-topbar__title"
+      onClick={() => navigate("/")}
+      style={{ cursor: "pointer" }}
+    >
+      QNA-AI
+    </h1>
             <p className="u-topbar__sub">Your AI Assistant</p>
           </div>
         </div>

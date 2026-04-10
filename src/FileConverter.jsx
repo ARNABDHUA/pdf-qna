@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from "react-router-dom";
 
 const styles = `
   .fc-root {
@@ -286,202 +287,211 @@ const styles = `
 `;
 
 const FileConverter = () => {
-    const [activeTab, setActiveTab] = useState('text-pdf');
-    const [text, setText] = useState('');
-    const [file, setFile] = useState(null);
-    const [loading, setLoading] = useState(false);
-    const [drag, setDrag] = useState(false);
+  const [activeTab, setActiveTab] = useState('text-pdf');
+  const [text, setText] = useState('');
+  const [file, setFile] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [drag, setDrag] = useState(false);
 
-    const modeLabels = { 'text-pdf': 'Text → PDF', 'word-pdf': 'Word → PDF', 'pdf-word': 'PDF → Word' };
-    const fmtLabels  = { 'text-pdf': 'PDF', 'word-pdf': 'PDF', 'pdf-word': 'Word (.docx)' };
-    const secLabels  = { 'text-pdf': 'Paste your text', 'word-pdf': 'Upload Word file', 'pdf-word': 'Upload PDF file' };
+  const navigate = useNavigate();
 
-    const isReady = activeTab === 'text-pdf' ? text.trim().length > 0 : !!file;
 
-    const getStatus = () => {
-        if (loading) return { label: 'Converting…', live: true };
-        if (isReady) return { label: 'Ready', live: true };
-        return { label: 'Waiting', live: false };
-    };
+  const modeLabels = { 'text-pdf': 'Text → PDF', 'word-pdf': 'Word → PDF', 'pdf-word': 'PDF → Word' };
+  const fmtLabels = { 'text-pdf': 'PDF', 'word-pdf': 'PDF', 'pdf-word': 'Word (.docx)' };
+  const secLabels = { 'text-pdf': 'Paste your text', 'word-pdf': 'Upload Word file', 'pdf-word': 'Upload PDF file' };
 
-    const handleTabSwitch = (tab) => {
-        setActiveTab(tab);
-        setFile(null);
-        setDrag(false);
-    };
+  const isReady = activeTab === 'text-pdf' ? text.trim().length > 0 : !!file;
 
-    const handleFileChange = (e) => {
-        const f = e.target.files[0];
-        if (f) setFile(f);
-    };
+  const getStatus = () => {
+    if (loading) return { label: 'Converting…', live: true };
+    if (isReady) return { label: 'Ready', live: true };
+    return { label: 'Waiting', live: false };
+  };
 
-    const handleDrop = (e) => {
-        e.preventDefault();
-        setDrag(false);
-        const f = e.dataTransfer.files[0];
-        if (f) setFile(f);
-    };
+  const handleTabSwitch = (tab) => {
+    setActiveTab(tab);
+    setFile(null);
+    setDrag(false);
+  };
 
-    const handleAction = async () => {
-        // setLoading(true);
-        // const baseUrl ="http://localhost:8000"||"https://pdf-qna-backend.onrender.com" ;
-        // let url = "";
-        // let options = {};
-        setLoading(true);
+  const handleFileChange = (e) => {
+    const f = e.target.files[0];
+    if (f) setFile(f);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDrag(false);
+    const f = e.dataTransfer.files[0];
+    if (f) setFile(f);
+  };
+
+  const handleAction = async () => {
+    // setLoading(true);
+    // const baseUrl ="http://localhost:8000"||"https://pdf-qna-backend.onrender.com" ;
+    // let url = "";
+    // let options = {};
+    setLoading(true);
     const baseUrl = "https://pdf-qna-backend.onrender.com" || "http://localhost:8000";  // ← swapped
     let url = "";
     let options = {};
-        try {
-            if (activeTab === 'text-pdf') {
-                url = `${baseUrl}/convert/text-to-pdf?text=${encodeURIComponent(text)}`;
-                options = { method: 'POST' };
-            } else {
-                const formData = new FormData();
-                formData.append('file', file);
-                url = activeTab === 'word-pdf' ? `${baseUrl}/convert/word-to-pdf` : `${baseUrl}/convert/pdf-to-word`;
-                options = { method: 'POST', body: formData };
-            }
+    try {
+      if (activeTab === 'text-pdf') {
+        url = `${baseUrl}/convert/text-to-pdf?text=${encodeURIComponent(text)}`;
+        options = { method: 'POST' };
+      } else {
+        const formData = new FormData();
+        formData.append('file', file);
+        url = activeTab === 'word-pdf' ? `${baseUrl}/convert/word-to-pdf` : `${baseUrl}/convert/pdf-to-word`;
+        options = { method: 'POST', body: formData };
+      }
 
-            const response = await fetch(url, options);
-            if (!response.ok) throw new Error("Conversion failed");
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error("Conversion failed");
 
-            const blob = await response.blob();
-            const downloadUrl = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = downloadUrl;
-            a.download = activeTab.endsWith('pdf') ? "result.pdf" : "result.docx";
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-        } catch (err) {
-            alert(err.message);
-        } finally {
-            setLoading(false);
-        }
-    };
+      const blob = await response.blob();
+      const downloadUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = activeTab.endsWith('pdf') ? "result.pdf" : "result.docx";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-    const status = getStatus();
+  const status = getStatus();
 
-    return (
-        <>
-            <style>{styles}</style>
-            <div className="fc-root">
-                <div className="fc-shell">
+  return (
+    <>
+      <style>{styles}</style>
+      <div className="fc-root">
+        <div className="fc-shell">
 
-                    <div className="fc-brand">
-                        <div className="fc-brand-icon">
-                            <svg viewBox="0 0 24 24">
-                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
-                                <polyline points="14 2 14 8 20 8"/>
-                                <line x1="12" y1="18" x2="12" y2="12"/>
-                                <line x1="9" y1="15" x2="15" y2="15"/>
-                            </svg>
-                        </div>
-                        <span className="fc-brand-name">FileConvert</span>
-                        <span className="fc-brand-tag">free</span>
-                    </div>
-
-                    <div className="fc-card">
-                        <div className="fc-tabs">
-                            {['text-pdf', 'word-pdf', 'pdf-word'].map(t => (
-                                <button
-                                    key={t}
-                                    className={`fc-tab${activeTab === t ? ' active' : ''}`}
-                                    onClick={() => handleTabSwitch(t)}
-                                >
-                                    {modeLabels[t]}
-                                </button>
-                            ))}
-                        </div>
-
-                        <div className="fc-body">
-                            <div className="fc-section-label">{secLabels[activeTab]}</div>
-
-                            {activeTab === 'text-pdf' && (
-                                <>
-                                    <textarea
-                                        className="fc-textarea"
-                                        placeholder="Start typing or paste content here…"
-                                        value={text}
-                                        onChange={(e) => setText(e.target.value)}
-                                    />
-                                    <div className="fc-char">{text.length} chars</div>
-                                </>
-                            )}
-
-                            {activeTab !== 'text-pdf' && !file && (
-                                <div
-                                    className={`fc-drop-zone${drag ? ' drag' : ''}`}
-                                    onClick={() => document.getElementById(`fc-file-input`).click()}
-                                    onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
-                                    onDragLeave={() => setDrag(false)}
-                                    onDrop={handleDrop}
-                                >
-                                    <div className="fc-drop-icon">
-                                        <svg viewBox="0 0 24 24">
-                                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                            <polyline points="17 8 12 3 7 8"/>
-                                            <line x1="12" y1="3" x2="12" y2="15"/>
-                                        </svg>
-                                    </div>
-                                    <div className="fc-drop-label">
-                                        Drop your {activeTab === 'word-pdf' ? '.docx' : '.pdf'} file
-                                    </div>
-                                    <div className="fc-drop-sub">or click to browse</div>
-                                </div>
-                            )}
-
-                            {activeTab !== 'text-pdf' && (
-                                <input
-                                    id="fc-file-input"
-                                    type="file"
-                                    hidden
-                                    accept={activeTab === 'word-pdf' ? ".docx" : ".pdf"}
-                                    onChange={handleFileChange}
-                                />
-                            )}
-
-                            {activeTab !== 'text-pdf' && file && (
-                                <div className="fc-file-pill">
-                                    <span className="fc-fp-dot" />
-                                    <span className="fc-fp-name">{file.name}</span>
-                                    <button className="fc-fp-clear" onClick={() => setFile(null)}>✕</button>
-                                </div>
-                            )}
-
-                            <button
-                                className={`fc-convert-btn${isReady && !loading ? ' ready' : ' off'}`}
-                                onClick={handleAction}
-                                disabled={loading || !isReady}
-                            >
-                                <svg viewBox="0 0 24 24">
-                                    <polyline points="8 17 3 12 8 7"/>
-                                    <polyline points="16 7 21 12 16 17"/>
-                                </svg>
-                                {loading ? 'Processing…' : 'Convert & Download'}
-                            </button>
-
-                            <div className="fc-footer">
-                                <div className="fc-stat">
-                                    <div className="fc-stat-label">Mode</div>
-                                    <div className="fc-stat-value">{modeLabels[activeTab]}</div>
-                                </div>
-                                <div className="fc-stat">
-                                    <div className="fc-stat-label">Output</div>
-                                    <div className="fc-stat-value">{fmtLabels[activeTab]}</div>
-                                </div>
-                                <div className="fc-stat">
-                                    <div className="fc-stat-label">Status</div>
-                                    <div className={`fc-stat-value${status.live ? ' live' : ''}`}>{status.label}</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                </div>
+          <div className="fc-brand">
+            <div className="fc-brand-icon">
+              <svg viewBox="0 0 24 24">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <line x1="12" y1="18" x2="12" y2="12" />
+                <line x1="9" y1="15" x2="15" y2="15" />
+              </svg>
             </div>
-        </>
-    );
+            <h1
+              className="u-topbar__title"
+              onClick={() => navigate("/")}
+              style={{ cursor: "pointer" }}
+            >
+              QNA-AI
+            </h1>
+            <span className="fc-brand-tag">free</span>
+          </div>
+
+          <div className="fc-card">
+            <div className="fc-tabs">
+              {['text-pdf', 'word-pdf', 'pdf-word'].map(t => (
+                <button
+                  key={t}
+                  className={`fc-tab${activeTab === t ? ' active' : ''}`}
+                  onClick={() => handleTabSwitch(t)}
+                >
+                  {modeLabels[t]}
+                </button>
+              ))}
+            </div>
+
+            <div className="fc-body">
+              <div className="fc-section-label">{secLabels[activeTab]}</div>
+
+              {activeTab === 'text-pdf' && (
+                <>
+                  <textarea
+                    className="fc-textarea"
+                    placeholder="Start typing or paste content here…"
+                    value={text}
+                    onChange={(e) => setText(e.target.value)}
+                  />
+                  <div className="fc-char">{text.length} chars</div>
+                </>
+              )}
+
+              {activeTab !== 'text-pdf' && !file && (
+                <div
+                  className={`fc-drop-zone${drag ? ' drag' : ''}`}
+                  onClick={() => document.getElementById(`fc-file-input`).click()}
+                  onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+                  onDragLeave={() => setDrag(false)}
+                  onDrop={handleDrop}
+                >
+                  <div className="fc-drop-icon">
+                    <svg viewBox="0 0 24 24">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                  </div>
+                  <div className="fc-drop-label">
+                    Drop your {activeTab === 'word-pdf' ? '.docx' : '.pdf'} file
+                  </div>
+                  <div className="fc-drop-sub">or click to browse</div>
+                </div>
+              )}
+
+              {activeTab !== 'text-pdf' && (
+                <input
+                  id="fc-file-input"
+                  type="file"
+                  hidden
+                  accept={activeTab === 'word-pdf' ? ".docx" : ".pdf"}
+                  onChange={handleFileChange}
+                />
+              )}
+
+              {activeTab !== 'text-pdf' && file && (
+                <div className="fc-file-pill">
+                  <span className="fc-fp-dot" />
+                  <span className="fc-fp-name">{file.name}</span>
+                  <button className="fc-fp-clear" onClick={() => setFile(null)}>✕</button>
+                </div>
+              )}
+
+              <button
+                className={`fc-convert-btn${isReady && !loading ? ' ready' : ' off'}`}
+                onClick={handleAction}
+                disabled={loading || !isReady}
+              >
+                <svg viewBox="0 0 24 24">
+                  <polyline points="8 17 3 12 8 7" />
+                  <polyline points="16 7 21 12 16 17" />
+                </svg>
+                {loading ? 'Processing…' : 'Convert & Download'}
+              </button>
+
+              <div className="fc-footer">
+                <div className="fc-stat">
+                  <div className="fc-stat-label">Mode</div>
+                  <div className="fc-stat-value">{modeLabels[activeTab]}</div>
+                </div>
+                <div className="fc-stat">
+                  <div className="fc-stat-label">Output</div>
+                  <div className="fc-stat-value">{fmtLabels[activeTab]}</div>
+                </div>
+                <div className="fc-stat">
+                  <div className="fc-stat-label">Status</div>
+                  <div className={`fc-stat-value${status.live ? ' live' : ''}`}>{status.label}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </>
+  );
 };
 
 export default FileConverter;

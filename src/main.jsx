@@ -13,7 +13,7 @@ createRoot(document.getElementById('root')).render(
 
         {/* Main chat page */}
         <Route path="/"          element={<App />} />
-        <Route path="/user"          element={<User />} />
+        <Route path="/review"          element={<User />} />
         <Route path="/converter"          element={<FileConverter />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
