@@ -323,11 +323,14 @@ const FileConverter = () => {
     };
 
     const handleAction = async () => {
+        // setLoading(true);
+        // const baseUrl ="http://localhost:8000"||"https://pdf-qna-backend.onrender.com" ;
+        // let url = "";
+        // let options = {};
         setLoading(true);
-        const baseUrl ="http://localhost:8000"||"https://pdf-qna-backend.onrender.com" ;
-        let url = "";
-        let options = {};
-
+    const baseUrl = "https://pdf-qna-backend.onrender.com" || "http://localhost:8000";  // ← swapped
+    let url = "";
+    let options = {};
         try {
             if (activeTab === 'text-pdf') {
                 url = `${baseUrl}/convert/text-to-pdf?text=${encodeURIComponent(text)}`;
