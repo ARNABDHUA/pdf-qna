@@ -8,8 +8,9 @@
 // Cloud providers (openai, anthropic, gemini, groq) → 100% unchanged, go through Render backend.
 
 const BASE_URL   = "https://pdf-qna-backend.onrender.com";
-const OLLAMA_URL = "http://localhost:11434";
-
+// const OLLAMA_URL = "http://localhost:11434";
+// After
+const OLLAMA_URL = "https://localhost:11435";
 // ─────────────────────────────────────────────────────────────────────────────
 // Unchanged helpers from original Api.js
 // ─────────────────────────────────────────────────────────────────────────────
@@ -232,7 +233,7 @@ export const api = {
     // Fetch Ollama models directly from your local machine
     let ollamaModels = [];
     try {
-        const res = await fetch(`http://localhost:11434/api/tags`, {
+        const res = await fetch(`https://localhost:11435/api/tags`, {
             signal: AbortSignal.timeout(5000),
         });
         if (res.ok) {
@@ -286,7 +287,7 @@ export const api = {
   async checkHealth() {
     let ollama = false;
     try {
-        const res = await fetch("http://localhost:11434/api/tags", {
+        const res = await fetch("https://localhost:11435/api/tags", {
             signal: AbortSignal.timeout(3000),
         });
         ollama = res.ok;
