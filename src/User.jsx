@@ -78,8 +78,12 @@ const CLOUD_MODELS = {
   ],
   groq: [
     { id: "llama-3.3-70b-versatile",       label: "LLaMA 3.3 70B" },
+    { id: "moonshotai/kimi-k2-instruct",       label: "kimi-k2-instruct" },
+    { id: "moonshotai/kimi-k2-instruct-0905",       label: "kimi-k2-instruct-0905" },
+    { id: "groq/compound",       label: "groq/compound" },
+    { id: "groq/compound-mini",       label: "groq/compound-mini" },
     { id: "llama-3.1-8b-instant",          label: "LLaMA 3.1 8B Instant" },
-    { id: "llama3-8b-8192",                label: "LLaMA3 8B" },
+    { id: "meta-llama/llama-4-scout-17b-16e-instruct",                label: "llama-4" },
     { id: "mixtral-8x7b-32768",            label: "Mixtral 8x7B" },
     { id: "gemma2-9b-it",                  label: "Gemma2 9B" },
     { id: "deepseek-r1-distill-llama-70b", label: "DeepSeek R1 70B" },
