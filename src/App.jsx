@@ -48,6 +48,9 @@ const Icon = {
   Plus:        () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>,
   Edit:        () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>,
   MessageSquare: () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>,
+  // New icons for drafting and brief modes
+  PenTool:     () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>,
+  BookOpen:    () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>,
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -239,6 +242,168 @@ function LegalMessage({ content, provider, model }) {
   );
 }
 
+// ── Drafting message renderer ─────────────────────────────────────────────────
+function DraftingMessage({ content, provider, model }) {
+  const [copied, setCopied] = React.useState(false);
+  const prov = PROVIDERS[provider] || {};
+
+  const copyText = () => {
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const renderContent = (text) => {
+    if (!text || text === "...") return <TypingDots />;
+    const lines = text.split("\n");
+    return lines.map((line, i) => {
+      if (/^[═─]{3,}/.test(line))
+        return <div key={i} className="legal-divider" />;
+      // Document title (e.g., PLAINT / WRIT PETITION / SALE DEED)
+      if (/^\[.*\]$/.test(line.trim()) || /^(PLAINT|WRIT PETITION|BAIL APPLICATION|SALE DEED|LEASE DEED|GIFT DEED|MORTGAGE DEED|PETITION|APPLICATION|COMPLAINT|CAVEAT|WRITTEN STATEMENT)/i.test(line.trim()))
+        return <div key={i} className="legal-main-title">{line.trim()}</div>;
+      // Court header lines
+      if (/^IN THE /i.test(line.trim()) || /^BETWEEN:/i.test(line.trim()))
+        return <div key={i} className="legal-section-header" style={{ textAlign: "center" }}>{line.trim()}</div>;
+      // MOST RESPECTFULLY SHOWETH / PRAYER / VERIFICATION headings
+      if (/^(MOST RESPECTFULLY SHOWETH|PRAYER|VERIFICATION|PLACE:|DATE:)/i.test(line.trim()))
+        return <div key={i} className="legal-sub-header">{line.trim()}</div>;
+      // versus line
+      if (/^\s*\.{3,}\s*(Petitioner|Plaintiff|Respondent|Defendant|Appellant)/i.test(line))
+        return <div key={i} className="legal-para" style={{ paddingLeft: "2rem", fontStyle: "italic" }}>{line}</div>;
+      if (/^\s*versus\s*$/i.test(line.trim()))
+        return <div key={i} className="legal-section-header" style={{ textAlign: "center" }}>— versus —</div>;
+      // Roman numeral or lettered sections
+      if (/^[IVX]+\.\s+[A-Z]/.test(line.trim()))
+        return <div key={i} className="legal-section-header">{line.trim()}</div>;
+      if (/^[A-D]\.\s+/.test(line.trim()) && line.trim().length < 80)
+        return <div key={i} className="legal-sub-header">{line.trim()}</div>;
+      // Numbered paragraphs
+      if (/^\d+\.\s/.test(line.trim()))
+        return <div key={i} className="legal-numbered">{line.trim()}</div>;
+      // Sub-numbered (a), (b), (c)
+      if (/^\([a-z]\)\s/.test(line.trim()))
+        return <div key={i} className="legal-bullet" style={{ paddingLeft: "1.5rem" }}>{line.trim()}</div>;
+      // Bullet points
+      if (/^[•\-]\s/.test(line.trim()))
+        return <div key={i} className="legal-bullet">{line.trim()}</div>;
+      // DISCLAIMER
+      if (line.includes("DISCLAIMER"))
+        return <div key={i} className="legal-disclaimer">{line}</div>;
+      // TO BE FILLED placeholders
+      if (line.includes("[TO BE FILLED"))
+        return <div key={i} className="legal-para" style={{ color: "var(--color-text-warning, #f59e0b)", fontStyle: "italic" }}>{line}</div>;
+      if (!line.trim()) return <div key={i} className="legal-spacer" />;
+      return <p key={i} className="legal-para">{line}</p>;
+    });
+  };
+
+  return (
+    <div className="legal-message">
+      <div className="legal-message__header">
+        <div className="legal-badge" style={{ background: "var(--color-background-success, #d1fae5)", color: "var(--color-text-success, #065f46)" }}>
+          <Icon.PenTool /> Legal Draft
+        </div>
+        <div className="legal-message__tags">
+          {provider && (
+            <span className="tag" style={{ color: prov.color, borderColor: prov.color + "44" }}>
+              {prov.icon} {prov.label}
+            </span>
+          )}
+          {model && <span className="tag">{model}</span>}
+        </div>
+        <button className="legal-copy-btn" onClick={copyText} title="Copy full draft">
+          <Icon.Copy /> {copied ? "Copied!" : "Copy"}
+        </button>
+      </div>
+      <div className="legal-body">{renderContent(content)}</div>
+    </div>
+  );
+}
+
+// ── Case Brief message renderer ───────────────────────────────────────────────
+function BriefMessage({ content, provider, model }) {
+  const [copied, setCopied] = React.useState(false);
+  const prov = PROVIDERS[provider] || {};
+
+  const copyText = () => {
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const renderContent = (text) => {
+    if (!text || text === "...") return <TypingDots />;
+    const lines = text.split("\n");
+    return lines.map((line, i) => {
+      if (/^[═─]{3,}/.test(line))
+        return <div key={i} className="legal-divider" />;
+      if (line.trim() === "CASE BRIEF")
+        return <div key={i} className="legal-main-title">{line.trim()}</div>;
+      // Roman numeral section headers (I. HEADING, II. STATEMENT OF FACTS, etc.)
+      if (/^[IVX]+\.\s+[A-Z]/.test(line.trim()))
+        return <div key={i} className="legal-section-header">{line.trim()}</div>;
+      // Lettered sub-sections (A. Parties, B. Legally Relevant Facts, etc.)
+      if (/^[A-D]\.\s+/.test(line.trim()) && line.trim().length < 100)
+        return <div key={i} className="legal-sub-header">{line.trim()}</div>;
+      // Metadata fields (Case Name:, Court:, Citation:, etc.)
+      if (/^(Case Name|Court|Date Decided|Citation|Coram|Subject Area|Cause of Action|Relief Sought|Defence Raised|Trial Court|Holding on Issue|Issue \d+)\s*:/.test(line.trim()))
+        return (
+          <div key={i} className="legal-meta">
+            <strong>{line.split(":")[0]}:</strong>
+            {line.slice(line.indexOf(":") + 1)}
+          </div>
+        );
+      // Issue lines
+      if (/^Issue \d+:/i.test(line.trim()))
+        return <div key={i} className="legal-numbered" style={{ fontStyle: "italic" }}>{line.trim()}</div>;
+      // Numbered items
+      if (/^\d+\.\s/.test(line.trim()))
+        return <div key={i} className="legal-numbered">{line.trim()}</div>;
+      // Bullet points
+      if (/^[•\-]\s/.test(line.trim()))
+        return <div key={i} className="legal-bullet">{line.trim()}</div>;
+      // Concurring / Dissenting labels
+      if (/^(Concurring|Dissenting)\s*—/.test(line.trim()))
+        return (
+          <div key={i} className={`legal-risk ${line.includes("Dissenting") ? "legal-risk--high" : "legal-risk--low"}`}>
+            {line.trim()}
+          </div>
+        );
+      // DISCLAIMER
+      if (line.includes("DISCLAIMER"))
+        return <div key={i} className="legal-disclaimer">{line}</div>;
+      // "Not ascertainable" placeholders
+      if (line.includes("Not ascertainable"))
+        return <div key={i} className="legal-para" style={{ color: "var(--color-text-secondary)", fontStyle: "italic" }}>{line}</div>;
+      if (!line.trim()) return <div key={i} className="legal-spacer" />;
+      return <p key={i} className="legal-para">{line}</p>;
+    });
+  };
+
+  return (
+    <div className="legal-message">
+      <div className="legal-message__header">
+        <div className="legal-badge" style={{ background: "var(--color-background-info, #dbeafe)", color: "var(--color-text-info, #1e40af)" }}>
+          <Icon.BookOpen /> Case Brief
+        </div>
+        <div className="legal-message__tags">
+          {provider && (
+            <span className="tag" style={{ color: prov.color, borderColor: prov.color + "44" }}>
+              {prov.icon} {prov.label}
+            </span>
+          )}
+          {model && <span className="tag">{model}</span>}
+        </div>
+        <button className="legal-copy-btn" onClick={copyText} title="Copy full brief">
+          <Icon.Copy /> {copied ? "Copied!" : "Copy"}
+        </button>
+      </div>
+      <div className="legal-body">{renderContent(content)}</div>
+    </div>
+  );
+}
+
 // ── Message ───────────────────────────────────────────────────────────────────
 function Message({ msg }) {
   const isUser = msg.role === "user";
@@ -264,6 +429,28 @@ function Message({ msg }) {
           <Icon.Scale />
         </div>
         <LegalMessage content={msg.content} provider={msg.provider} model={msg.model} />
+      </div>
+    );
+  }
+
+  if (!isUser && msg.mode === "drafting") {
+    return (
+      <div className="message message--ai">
+        <div className="message__avatar" style={{ background: "linear-gradient(135deg,#10b981,#065f46)" }}>
+          <Icon.PenTool />
+        </div>
+        <DraftingMessage content={msg.content} provider={msg.provider} model={msg.model} />
+      </div>
+    );
+  }
+
+  if (!isUser && msg.mode === "brief") {
+    return (
+      <div className="message message--ai">
+        <div className="message__avatar" style={{ background: "linear-gradient(135deg,#3b82f6,#1e40af)" }}>
+          <Icon.BookOpen />
+        </div>
+        <BriefMessage content={msg.content} provider={msg.provider} model={msg.model} />
       </div>
     );
   }
@@ -526,14 +713,13 @@ export default function App() {
   const modeRef         = useRef("chat");
   const webSearchRef    = useRef(false);
 
-  useEffect(() => { modeRef.current    = mode;             }, [mode]);
+  useEffect(() => { modeRef.current      = mode;             }, [mode]);
   useEffect(() => { webSearchRef.current = webSearchEnabled; }, [webSearchEnabled]);
   useEffect(() => { selectedProvRef.current = selectedProvider; }, [selectedProvider]);
   useEffect(() => { selectedModRef.current  = selectedModel;    }, [selectedModel]);
   useEffect(() => { apiKeysRef.current      = apiKeys;          }, [apiKeys]);
   useEffect(() => { messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages]);
 
-  // Close mobile sidebar on resize to desktop
   useEffect(() => {
     const mq = window.matchMedia("(min-width: 769px)");
     const handle = (e) => { if (e.matches) setSidebarOpen(false); };
@@ -541,11 +727,8 @@ export default function App() {
     return () => mq.removeEventListener("change", handle);
   }, []);
 
-  // Init: load providers, documents, health — auto-create first session
   useEffect(() => {
-    if (sessionList.length === 0) {
-      createSession("New Chat");
-    }
+    if (sessionList.length === 0) createSession("New Chat");
 
     api.getProviders().then(data => {
       setProviderData(data);
@@ -601,7 +784,11 @@ export default function App() {
   // ── Send / stream ──────────────────────────────────────────────────────────
   const handleSend = useCallback(async (overrideText) => {
     const question = (overrideText || input).trim();
-    if (!question || isStreaming) return;
+
+    // Legal, drafting, brief modes: allow empty question (full auto-analysis)
+    const isDocMode = ["legal", "drafting", "brief"].includes(modeRef.current);
+    if (!isDocMode && !question) return;
+    if (isStreaming) return;
 
     const provider     = selectedProvRef.current;
     const model        = selectedModRef.current;
@@ -612,14 +799,18 @@ export default function App() {
     if (!model) return;
     if (documents.length === 0 && !(useWebSearch && currMode === "chat")) return;
 
-    // Clear previous follow-ups immediately
     clearFollowUps();
     setInput("");
 
     const userMsgId = Date.now();
     const aiMsgId   = userMsgId + 1;
-    const userContent = currMode === "legal" && !question.trim()
-      ? "Generate full legal analysis"
+
+    const userContent = isDocMode && !question
+      ? currMode === "drafting"
+        ? "Draft a complete court-ready legal document from the uploaded material"
+        : currMode === "brief"
+        ? "Prepare a complete professional case brief from the uploaded material"
+        : "Generate full legal analysis"
       : question;
 
     setMessages(prev => [
@@ -658,10 +849,9 @@ export default function App() {
         }
       }
 
-      // TTS — speak the completed answer
       if (full) speak(full);
 
-      // Follow-up suggestions — only in chat mode
+      // Follow-ups only in chat mode
       if (full && currMode === "chat") {
         generateFollowUps(question, full, provider, model, apiKey);
       }
@@ -721,13 +911,60 @@ export default function App() {
   };
 
   // ── Derived state ──────────────────────────────────────────────────────────
+  const isDocMode = ["legal", "drafting", "brief"].includes(mode);
+
   const canSend = !isStreaming && !!selectedModel && (
-    (mode === "legal" && documents.length > 0) ||
-    (mode === "chat"  && (documents.length > 0 || webSearchEnabled) && input.trim())
+    (isDocMode && documents.length > 0) ||
+    (mode === "chat" && (documents.length > 0 || webSearchEnabled) && input.trim())
   );
 
   const closeSidebar  = () => setSidebarOpen(false);
   const toggleCollapse = () => setSidebarCollapsed(c => !c);
+
+  // ── Mode config ────────────────────────────────────────────────────────────
+  const modeConfig = {
+    chat: {
+      label:       "Chat",
+      icon:        <Icon.Chat />,
+      btnClass:    "mode-btn",
+      hint:        `Upload a PDF or enable Web Search to start`,
+      activeHint:  `${documents.length} doc${documents.length !== 1 ? "s" : ""} · ${PROVIDERS[selectedProvider]?.icon} ${PROVIDERS[selectedProvider]?.label} · ${selectedModel || "pick a model"} · Enter to send`,
+      placeholder: documents.length === 0 && !webSearchEnabled
+        ? "Upload a PDF first, or enable Web Search…"
+        : webSearchEnabled && documents.length === 0
+        ? "Ask anything — web search is active…"
+        : `Ask anything · ${PROVIDERS[selectedProvider]?.label} / ${selectedModel || "no model"}`,
+    },
+    legal: {
+      label:       "Legal Analysis",
+      icon:        <Icon.Scale />,
+      btnClass:    "mode-btn mode-btn--legal",
+      activeClass: "mode-btn--active mode-btn--legal-active",
+      hint:        "Upload a legal document, then click Send to generate a full legal draft analysis",
+      activeHint:  `⚖ Legal mode · ${PROVIDERS[selectedProvider]?.icon} ${PROVIDERS[selectedProvider]?.label} · ${selectedModel || "pick a model"}`,
+      placeholder: "Optional: add specific focus (e.g. 'focus on liability clauses') or leave empty for full analysis…",
+    },
+    drafting: {
+      label:       "Drafting",
+      icon:        <Icon.PenTool />,
+      btnClass:    "mode-btn mode-btn--legal",
+      activeClass: "mode-btn--active mode-btn--legal-active",
+      hint:        "Upload case facts / instructions PDF, then describe the document to draft or leave empty for auto-draft",
+      activeHint:  `✍ Drafting mode · ${PROVIDERS[selectedProvider]?.icon} ${PROVIDERS[selectedProvider]?.label} · ${selectedModel || "pick a model"}`,
+      placeholder: "e.g. 'Draft a plaint for recovery of money' or leave empty to auto-draft from the uploaded facts…",
+    },
+    brief: {
+      label:       "Case Brief",
+      icon:        <Icon.BookOpen />,
+      btnClass:    "mode-btn mode-btn--legal",
+      activeClass: "mode-btn--active mode-btn--legal-active",
+      hint:        "Upload a judgment or case material PDF, then click Send to generate a professional case brief",
+      activeHint:  `📖 Case Brief mode · ${PROVIDERS[selectedProvider]?.icon} ${PROVIDERS[selectedProvider]?.label} · ${selectedModel || "pick a model"}`,
+      placeholder: "Optional: e.g. 'Focus on ratio decidendi and dissenting opinion' or leave empty for full brief…",
+    },
+  };
+
+  const currentMode = modeConfig[mode] || modeConfig.chat;
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -782,7 +1019,7 @@ export default function App() {
           />
         )}
 
-        {/* Sessions panel — hidden when collapsed */}
+        {/* Sessions panel */}
         {!sidebarCollapsed && (
           <SessionPanel
             sessionList={sessionList}
@@ -795,7 +1032,6 @@ export default function App() {
           />
         )}
 
-        {/* Collapsed: session icon */}
         {sidebarCollapsed && (
           <button
             className="sidebar-icon-btn"
@@ -818,7 +1054,6 @@ export default function App() {
           collapsed={sidebarCollapsed}
         />
 
-        {/* Collapsed: active provider badge */}
         {sidebarCollapsed && (
           <div className="collapsed-provider-badge" title={PROVIDERS[selectedProvider]?.label}>
             <span style={{ fontSize: 20 }}>{PROVIDERS[selectedProvider]?.icon}</span>
@@ -835,7 +1070,7 @@ export default function App() {
         {/* Nav links */}
         <NavLinks collapsed={sidebarCollapsed} />
 
-        {/* Upload zone — hidden when collapsed */}
+        {/* Upload zone */}
         {!sidebarCollapsed && (
           <>
             <div
@@ -880,7 +1115,6 @@ export default function App() {
           </>
         )}
 
-        {/* Collapsed: upload icon */}
         {sidebarCollapsed && (
           <button className="sidebar-icon-btn" onClick={() => fileInputRef.current?.click()} title="Upload PDF">
             <Icon.Upload />
@@ -913,75 +1147,86 @@ export default function App() {
         {/* Input area */}
         <div className="chat__input-wrap">
 
-          {/* Follow-up suggestions */}
-          <FollowUpSuggestions
-            suggestions={followUps}
-            loading={followUpsLoading}
-            onSelect={(q) => {
-              setInput(q);
-              setTimeout(() => handleSendRef.current(q), 50);
-            }}
-          />
+          {/* Follow-up suggestions — only in chat mode */}
+          {mode === "chat" && (
+            <FollowUpSuggestions
+              suggestions={followUps}
+              loading={followUpsLoading}
+              onSelect={(q) => {
+                setInput(q);
+                setTimeout(() => handleSendRef.current(q), 50);
+              }}
+            />
+          )}
 
           {/* Mode toggle row */}
           <div className="mode-toggle-wrap">
+            {/* Chat */}
             <button
               className={`mode-btn ${mode === "chat" ? "mode-btn--active" : ""}`}
               onClick={() => { setMode("chat"); modeRef.current = "chat"; }}
             >
               <Icon.Chat /> Chat
             </button>
+
+            {/* Legal Analysis */}
             <button
               className={`mode-btn mode-btn--legal ${mode === "legal" ? "mode-btn--active mode-btn--legal-active" : ""}`}
               onClick={() => { setMode("legal"); modeRef.current = "legal"; }}
             >
               <Icon.Scale /> Legal Analysis
             </button>
+
+            {/* Drafting */}
+            <button
+              className={`mode-btn mode-btn--legal ${mode === "drafting" ? "mode-btn--active mode-btn--legal-active" : ""}`}
+              onClick={() => { setMode("drafting"); modeRef.current = "drafting"; }}
+              style={mode === "drafting" ? { borderColor: "#10b981", color: "#10b981", background: "#10b98118" } : {}}
+            >
+              <Icon.PenTool /> Drafting
+            </button>
+
+            {/* Case Brief */}
+            <button
+              className={`mode-btn mode-btn--legal ${mode === "brief" ? "mode-btn--active mode-btn--legal-active" : ""}`}
+              onClick={() => { setMode("brief"); modeRef.current = "brief"; }}
+              style={mode === "brief" ? { borderColor: "#3b82f6", color: "#3b82f6", background: "#3b82f618" } : {}}
+            >
+              <Icon.BookOpen /> Case Brief
+            </button>
+
+            {/* Active-mode badges */}
             {webSearchEnabled && mode === "chat" && (
               <span className="web-search-active-badge">
                 <Icon.Globe /> Web search active
               </span>
             )}
-            {mode === "legal" && (
+            {mode !== "chat" && (
               <span className="mode-hint">
-                Upload a legal document, then click Send to generate a full legal draft analysis
+                {currentMode.hint}
               </span>
             )}
           </div>
 
           {/* Input box */}
-          <div className={`chat__input-box ${isListening ? "chat__input-box--listening" : ""} ${mode === "legal" ? "chat__input-box--legal" : ""} ${webSearchEnabled ? "chat__input-box--websearch" : ""}`}>
+          <div className={`chat__input-box ${isListening ? "chat__input-box--listening" : ""} ${isDocMode ? "chat__input-box--legal" : ""} ${webSearchEnabled ? "chat__input-box--websearch" : ""}`}>
             <textarea
               className="chat__textarea"
-              placeholder={
-                mode === "legal"
-                  ? "Optional: add specific focus (e.g. 'focus on liability clauses') or leave empty for full analysis…"
-                  : documents.length === 0 && !webSearchEnabled
-                  ? "Upload a PDF first, or enable Web Search…"
-                  : webSearchEnabled && documents.length === 0
-                  ? "Ask anything — web search is active…"
-                  : `Ask anything · ${PROVIDERS[selectedProvider]?.label} / ${selectedModel || "no model"}`
-              }
+              placeholder={currentMode.placeholder}
               value={input}
               onChange={e => setInput(e.target.value)}
               onKeyDown={e => {
                 if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); }
               }}
               rows={1}
-              disabled={isStreaming || (documents.length === 0 && !webSearchEnabled && mode !== "legal")}
+              disabled={isStreaming || (documents.length === 0 && !webSearchEnabled && mode === "chat")}
             />
             <div className="chat__actions">
               {/* TTS toggle */}
               <button
                 className={`btn-voice ${ttsEnabled ? "btn-voice--active" : ""} ${isSpeaking ? "btn-voice--speaking" : ""}`}
                 onClick={isSpeaking ? stopSpeaking : toggleTTS}
-                title={
-                  isSpeaking
-                    ? "Stop speaking"
-                    : ttsEnabled
-                    ? "Voice output ON — click to disable"
-                    : "Voice output OFF — click to enable"
-                }
+                title={isSpeaking ? "Stop speaking" : ttsEnabled ? "Voice output ON — click to disable" : "Voice output OFF — click to enable"}
               >
                 {ttsEnabled ? <Icon.Speaker /> : <Icon.SpeakerOff />}
               </button>
@@ -1015,13 +1260,13 @@ export default function App() {
           )}
 
           <p className="chat__hint">
-            {mode === "legal"
-              ? `⚖ Legal mode · ${PROVIDERS[selectedProvider]?.icon} ${PROVIDERS[selectedProvider]?.label} · ${selectedModel || "pick a model"}`
+            {isDocMode
+              ? currentMode.activeHint
               : webSearchEnabled
               ? `🌐 Web search ON · ${PROVIDERS[selectedProvider]?.icon} ${PROVIDERS[selectedProvider]?.label} · ${selectedModel || "pick a model"}`
               : documents.length > 0
-              ? `${documents.length} doc${documents.length > 1 ? "s" : ""} · ${PROVIDERS[selectedProvider]?.icon} ${PROVIDERS[selectedProvider]?.label} · ${selectedModel || "pick a model"} · Enter to send`
-              : "Upload a PDF or enable Web Search to start"}
+              ? currentMode.activeHint
+              : currentMode.hint}
           </p>
         </div>
       </main>

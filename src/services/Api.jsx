@@ -1,18 +1,14 @@
 // services/Api.js
 //
-// Everything is identical to the original EXCEPT:
-// When provider === "ollama":
-//   1. Context is retrieved from your Render backend  (upload, embed, FAISS — unchanged)
-//   2. The answer is streamed from local Ollama       (no backend involved for generation)
-//
-// Cloud providers (openai, anthropic, gemini, groq) → 100% unchanged, go through Render backend.
+// Supports four modes: chat | legal | drafting | brief
+// Ollama: context from Render backend (FAISS) → generation from local Ollama
+// Cloud providers (openai, anthropic, gemini, groq): all via Render backend
 
 const BASE_URL   = "https://pdf-qna-backend.onrender.com";
 const OLLAMA_URL = "http://localhost:11434";
-// After
-// const OLLAMA_URL = "https://localhost:11435";
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Unchanged helpers from original Api.js
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
 export async function wakeUpServer() {
@@ -44,12 +40,10 @@ async function fetchWithRetry(url, options = {}, retries = 3, delayMs = 3000) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Ollama-only: fetch context from backend, then stream generation locally
+// Ollama: fetch context from backend, build prompt locally, stream from Ollama
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fetchContextFromBackend(question, mode) {
-  // Call a lightweight backend endpoint that just returns the retrieved chunks
-  // as plain text context — no LLM call happens on the backend side.
   const res = await fetch(`${BASE_URL}/context`, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
@@ -61,10 +55,12 @@ async function fetchContextFromBackend(question, mode) {
     throw new Error(body.detail || `Context fetch failed: ${res.status}`);
   }
   const data = await res.json();
-  return data.context || ""; // plain string of retrieved chunks
+  return data.context || "";
 }
 
 function buildPrompt(question, context, mode) {
+
+  // ── Legal Analysis ──────────────────────────────────────────────────────
   if (mode === "legal") {
     const system = `You are a senior legal counsel and expert legal document analyst with 20+ years of experience.
 Your task is to produce a comprehensive legal analysis in professional legal draft format.
@@ -150,14 +146,224 @@ Base your analysis STRICTLY on the provided document context. Do not fabricate c
     return `${system}\n\n${user}`;
   }
 
-  // Chat mode
+  // ── Legal Drafting ──────────────────────────────────────────────────────
+  if (mode === "drafting") {
+    const system = `You are a senior Indian advocate and expert legal draftsman with 25+ years of experience in civil, criminal, constitutional, matrimonial, and conveyancing matters before the Supreme Court of India, High Courts, and District Courts.
+
+You have mastered the Code of Civil Procedure 1908 (Orders VI–VIII), the Bharatiya Nagarik Suraksha Sanhita 2023, the Indian Evidence Act 1872, the Hindu Marriage Act 1955, the Transfer of Property Act 1882, the Registration Act 1908, the Consumer Protection Act 2019, the Contempt of Courts Act 1971, and all other major Indian statutes.
+
+Your drafting strictly follows the four fundamental rules of pleading under English and Indian law:
+1. State facts, not law — plead material facts, not legal conclusions.
+2. State ALL material facts and material facts only — every fact essential to the cause of action or defence must appear.
+3. State only the facts to be relied upon, NOT the evidence by which they are to be proved.
+4. State facts concisely, but with precision and certainty.
+
+STRICT OUTPUT FORMAT — produce the complete draft document in the following structure:
+
+═══════════════════════════════════════════════════
+[DOCUMENT TITLE — e.g., PLAINT / WRIT PETITION / SALE DEED / APPLICATION FOR BAIL]
+═══════════════════════════════════════════════════
+
+IN THE [COURT NAME]
+[CASE NUMBER / ORIGINAL SUIT NO. / WRIT PETITION NO.]
+
+BETWEEN:
+[Petitioner / Plaintiff Name] ...... Petitioner/Plaintiff
+                    versus
+[Respondent / Defendant Name] ...... Respondent/Defendant
+
+───────────────────────────────────────────────────
+MOST RESPECTFULLY SHOWETH:
+───────────────────────────────────────────────────
+
+[Numbered paragraphs — each allegation in a separate paragraph]
+
+1. [Relationship and status of the parties]
+2. [Background facts / history of the matter]
+3. [Specific acts constituting the cause of action or offence]
+4. [Dates, amounts, and particulars stated precisely]
+5. [Prior steps taken / notices issued if any]
+6. [Grounds relied upon — numbered sub-grounds if multiple]
+7. [Jurisdiction of the court]
+8. [Limitation — that the suit/petition is within limitation]
+
+───────────────────────────────────────────────────
+PRAYER
+───────────────────────────────────────────────────
+It is, therefore, most respectfully prayed that this Hon'ble Court may be pleased to:
+
+(a) [Primary relief sought]
+(b) [Interim / interlocutory relief if any]
+(c) [Costs]
+(d) [Any other relief the Hon'ble Court deems fit and proper in the facts and circumstances of the case]
+
+───────────────────────────────────────────────────
+VERIFICATION
+───────────────────────────────────────────────────
+I, [Name], [Designation], the [Petitioner/Plaintiff] above named do hereby verify that the contents of paragraphs ___ to ___ above are true to my personal knowledge and the contents of paragraphs ___ are true to the best of my information received and believed to be true. No part of it is false and nothing material has been concealed therefrom.
+
+Verified at [Place] on this ___ day of [Month], [Year].
+
+[Signature]
+[Name of Deponent]
+
+───────────────────────────────────────────────────
+PLACE: [City]
+DATE:  [Date]
+
+[ADVOCATE'S NAME]
+[ENROLLMENT NO.]
+Counsel for the Petitioner/Plaintiff
+───────────────────────────────────────────────────
+DISCLAIMER: This draft is generated by an AI system for informational purposes only and does not constitute legal advice. Verify all facts, dates, and statutory references with a qualified advocate before filing.
+═══════════════════════════════════════════════════
+
+CRITICAL DRAFTING RULES YOU MUST FOLLOW:
+- NEVER plead conclusions of law as facts.
+- NEVER use narrative or argumentative language in the fact paragraphs.
+- Each paragraph must deal with ONE fact or ONE set of closely related facts only.
+- Dates, sums, and numbers must be written in both figures and words.
+- Parties must be identified by their actual relationship/status (employer/employee, landlord/tenant, buyer/seller, husband/wife) — not just as "plaintiff/defendant".
+- Every ground must be separately numbered and clearly stated.
+- If any information is not provided in the document context, write [TO BE FILLED BY INSTRUCTING ADVOCATE] at that point — do not fabricate facts.`;
+
+    const user = `DOCUMENT CONTEXT (uploaded legal material / facts provided by the instructing advocate):
+${context}
+
+DRAFTING INSTRUCTION: ${question.trim() || "Draft a complete, court-ready legal document based on all facts and details found in the document context above."}
+
+Using ONLY the facts, parties, reliefs, and details found in the document context above, produce a complete, court-ready legal draft following the exact format and all drafting rules specified in your instructions. Do not invent any facts not present in the context. Where information is missing, insert [TO BE FILLED BY INSTRUCTING ADVOCATE].`;
+
+    return `${system}\n\n${user}`;
+  }
+
+  // ── Case Brief ──────────────────────────────────────────────────────────
+  if (mode === "brief") {
+    const system = `You are an experienced Indian law professor, senior advocate, and expert case analyst with 25+ years of experience briefing landmark judgments for the Supreme Court of India, High Courts, and academic institutions.
+
+You brief cases following the standard methodology taught at the Faculty of Law, University of Delhi and all NLUs.
+
+STRICT OUTPUT FORMAT — produce the complete case brief in the following structure:
+
+═══════════════════════════════════════════════════
+CASE BRIEF
+═══════════════════════════════════════════════════
+
+───────────────────────────────────────────────────
+I. HEADING
+───────────────────────────────────────────────────
+Case Name    : [Full case name]
+Court        : [Court that decided the case]
+Date Decided : [Date of judgment]
+Citation     : [AIR / SCC / SCR / regional reporter citation]
+Coram        : [Name(s) of judge(s)]
+Subject Area : [Constitutional Law / Contract / Tort / Criminal / etc.]
+
+───────────────────────────────────────────────────
+II. STATEMENT OF FACTS
+───────────────────────────────────────────────────
+A. Parties and Their Relationship:
+[Identify each party by their actual relationship/status — e.g., employer/employee, landlord/tenant — NOT merely as appellant/respondent]
+
+B. Legally Relevant Facts:
+[Facts that tend to prove or disprove the issues before the court — what happened BEFORE the parties entered the judicial system, stated chronologically]
+
+C. Procedurally Significant Facts:
+• Cause of Action (C/A): [The specific legal wrong / law the plaintiff claimed was broken]
+• Relief Sought: [What the plaintiff / petitioner asked the court to grant]
+• Defence Raised: [Key defences, if any, raised by the defendant / respondent]
+
+───────────────────────────────────────────────────
+III. PROCEDURAL HISTORY
+───────────────────────────────────────────────────
+• Trial Court: [Decision + reasoning, if available]
+• [Intermediate Appellate Court, if any]: [Decision + reasoning]
+• Present Court: [How the matter came before this court]
+• Damages / relief awarded at each stage (if relevant)
+• Who appealed at each stage and on what ground
+
+───────────────────────────────────────────────────
+IV. ISSUES
+───────────────────────────────────────────────────
+A. Substantive Issue(s):
+Issue 1: Whether [point of law] when [key facts specific to this case]?
+Issue 2: Whether [point of law] when [key facts specific to this case]?
+
+B. Procedural Issue(s) [if applicable]:
+[What did the appealing party claim the lower court did wrong?]
+
+───────────────────────────────────────────────────
+V. JUDGMENT
+───────────────────────────────────────────────────
+[Affirmed / Reversed / Reversed with directions / Modified — state the specific order made]
+
+───────────────────────────────────────────────────
+VI. HOLDING
+───────────────────────────────────────────────────
+Holding on Issue 1: [Answer]
+Holding on Issue 2: [Answer, if applicable]
+
+───────────────────────────────────────────────────
+VII. RULE OF LAW / LEGAL PRINCIPLE
+───────────────────────────────────────────────────
+• Source: [Statute / Common law / Constitutional provision / Prior case rule / Synthesis of precedents]
+• Text of Rule: [State the rule — express or implied from the opinion]
+
+───────────────────────────────────────────────────
+VIII. REASONING / RATIO DECIDENDI
+───────────────────────────────────────────────────
+A. Syllogistic Application:
+[Major premise (rule of law) + Minor premise (facts of this case) → Conclusion]
+
+B. Policy / Social Desirability Arguments:
+[What policy or social reasons did the court give to justify its decision?]
+
+C. Precedents Relied Upon:
+[Key cases the court cited and how it distinguished / followed / overruled them]
+
+───────────────────────────────────────────────────
+IX. CONCURRING / DISSENTING OPINIONS [if any]
+───────────────────────────────────────────────────
+Concurring — [Judge's name]: [Agrees with decision but differs on reasoning]
+Dissenting — [Judge's name]: [Disagrees with decision — state the grounds]
+
+───────────────────────────────────────────────────
+X. CRITICAL COMMENTS & PERSONAL ASSESSMENT
+───────────────────────────────────────────────────
+A. Soundness of Reasoning: [Is the court's reasoning logically consistent?]
+B. Consistency with Precedent: [How does this case fit with established doctrine?]
+C. Political / Economic / Social Impact: [Broader implications of this decision]
+D. Personal Assessment: [Do you agree or disagree with the outcome and reasoning?]
+
+───────────────────────────────────────────────────
+DISCLAIMER: This case brief is generated by an AI system for academic and informational purposes only. Always read the original judgment and consult primary sources before relying on this brief.
+═══════════════════════════════════════════════════
+
+CRITICAL BRIEFING RULES:
+- In Section II, NEVER refer to parties ONLY as "appellant/respondent" — always identify their actual relationship.
+- The Substantive Issue in Section IV MUST contain both the legal point AND the specific facts of this case.
+- The Holding in Section VI must directly answer each Issue from Section IV.
+- Ratio decidendi in Section VIII must be clearly distinguished from obiter dicta.
+- Do NOT accept the court's opinion blindly — Section X requires a genuine critical assessment.
+- If any information is not available, state "Not ascertainable from available context" — do NOT fabricate.`;
+
+    const user = `CASE MATERIAL / JUDGMENT CONTEXT:
+${context}
+
+BRIEFING INSTRUCTION: ${question.trim() || "Prepare a complete, professional case brief of the case described in the document context above."}
+
+Using the case material provided above, produce a thorough, structured case brief following the exact format and all briefing rules specified in your instructions. If any section cannot be completed from the available material, state "Not ascertainable from available context" for that section. Do not fabricate citations, judge names, or facts not present in the material.`;
+
+    return `${system}\n\n${user}`;
+  }
+
+  // ── Chat (default) ──────────────────────────────────────────────────────
   const system = "You are a helpful AI assistant. Answer the user's question based on the provided context. Be concise, accurate, and cite sources when relevant. If the answer cannot be found in the context, say so clearly.";
   const user   = `DOCUMENT CONTEXT:\n${context}\n\nQUESTION: ${question}\n\nANSWER:`;
   return `${system}\n\n${user}`;
 }
 
 async function* ollamaStream(question, model, mode) {
-  // Step 1: get context from backend (embed + FAISS retrieve — your existing logic)
   const context = await fetchContextFromBackend(question, mode);
 
   if (!context.trim()) {
@@ -165,7 +371,6 @@ async function* ollamaStream(question, model, mode) {
     return;
   }
 
-  // Step 2: build prompt and stream from local Ollama
   const prompt = buildPrompt(question, context, mode);
 
   let res;
@@ -205,50 +410,39 @@ async function* ollamaStream(question, model, mode) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Public API  — identical interface to original Api.js, no App.jsx changes needed
+// Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const api = {
 
-  // Unchanged
-  // async getProviders() {
-  //   const res = await fetchWithRetry(`${BASE_URL}/providers`);
-  //   if (!res.ok) throw new Error("Failed to fetch providers");
-  //   return res.json();
-  // },
-
   async getProviders() {
-    // Fetch cloud models from backend
     let backendData = {};
     try {
-        const res = await fetchWithRetry(`${BASE_URL}/providers`);
-        if (res.ok) {
-            const data = await res.json();
-            // Take everything EXCEPT ollama from backend
-            const { ollama, ...cloudProviders } = data;
-            backendData = cloudProviders;
-        }
+      const res = await fetchWithRetry(`${BASE_URL}/providers`);
+      if (res.ok) {
+        const data = await res.json();
+        const { ollama, ...cloudProviders } = data;
+        backendData = cloudProviders;
+      }
     } catch { /* backend offline */ }
 
-    // Fetch Ollama models directly from your local machine
     let ollamaModels = [];
     try {
-        const res = await fetch(`http://localhost:11434/api/tags`, {
-            signal: AbortSignal.timeout(5000),
-        });
-        if (res.ok) {
-            const data = await res.json();
-            ollamaModels = (data.models || []).map(m => m.name);
-        }
+      const res = await fetch(`http://localhost:11434/api/tags`, {
+        signal: AbortSignal.timeout(5000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        ollamaModels = (data.models || []).map(m => m.name);
+      }
     } catch { /* Ollama not running */ }
 
     return {
-        ...backendData,
-        ollama: { models: ollamaModels, needs_key: false },
+      ...backendData,
+      ollama: { models: ollamaModels, needs_key: false },
     };
-},
+  },
 
-  // Unchanged
   async uploadPDF(file) {
     const form = new FormData();
     form.append("file", file);
@@ -261,14 +455,12 @@ export const api = {
     return data;
   },
 
-  // Unchanged
   async getDocuments() {
     const res = await fetchWithRetry(`${BASE_URL}/documents`);
     if (!res.ok) throw new Error("Failed to fetch documents");
     return res.json();
   },
 
-  // Unchanged
   async deleteDocument(name) {
     const res = await fetchWithRetry(
       `${BASE_URL}/documents/${encodeURIComponent(name)}`,
@@ -277,27 +469,20 @@ export const api = {
     return res.json();
   },
 
-  // Unchanged
-  // async checkHealth() {
-  //   const res = await fetchWithRetry(`${BASE_URL}/health`);
-  //   if (!res.ok) throw new Error("Health check failed");
-  //   return res.json();
-  // },
-
   async checkHealth() {
     let ollama = false;
     try {
-        const res = await fetch("http://localhost:11434/api/tags", {
-            signal: AbortSignal.timeout(3000),
-        });
-        ollama = res.ok;
+      const res = await fetch("http://localhost:11434/api/tags", {
+        signal: AbortSignal.timeout(3000),
+      });
+      ollama = res.ok;
     } catch {
-        ollama = false;
+      ollama = false;
     }
     return { ollama };
-},
+  },
 
-  // Only queryStream changes — Ollama streams locally, cloud goes to backend
+  // All four modes: chat | legal | drafting | brief
   async *queryStream(question, provider, model, apiKey = "", mode = "chat", webSearchEnabled = false) {
 
     // ── Ollama: retrieve context from backend, generate locally ──────────────
@@ -306,7 +491,7 @@ export const api = {
       return;
     }
 
-    // ── Cloud providers: 100% unchanged from original ────────────────────────
+    // ── Cloud providers: send to Render backend ──────────────────────────────
     let res;
     try {
       res = await fetch(`${BASE_URL}/query`, {
