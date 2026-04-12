@@ -4,6 +4,7 @@ import { useVoiceInput } from "./hooks/UseVoiceInput";
 import { useTTS } from "./hooks/UseTTS";
 import { useChatSessions } from "./hooks/UseChatSessions";
 import { useFollowUps } from "./hooks/UseFollowUps";
+import MarkdownRenderer from "./MarkdownRenderer";
 import "./App.css";
 
 // ── Provider metadata ─────────────────────────────────────────────────────────
@@ -464,7 +465,9 @@ function Message({ msg }) {
         {isUser ? <Icon.User /> : <Icon.Bot />}
       </div>
       <div className="message__bubble">
-        {msg.content === "..." ? <TypingDots /> : <p className="message__text">{msg.content}</p>}
+        {msg.content === "..."
+  ? <TypingDots />
+  : <MarkdownRenderer content={msg.content} />}
         {msg.provider && !isUser && (
           <div className="message__tags">
             <span className="tag" style={{ color: prov.color, borderColor: prov.color + "44" }}>
@@ -692,7 +695,7 @@ export default function App() {
     deleteSession,
     setMessages,
     clearAll,
-  } = useChatSessions();
+  } = useChatSessions("app");
 
   const { ttsEnabled, isSpeaking, speak, stopSpeaking, toggleTTS } = useTTS();
 
