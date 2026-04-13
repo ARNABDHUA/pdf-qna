@@ -67,11 +67,16 @@ const CLOUD_MODELS = {
   ],
   anthropic: [
     { id: "claude-opus-4-5",           label: "Claude Opus 4.5" },
+    { id: "claude-sonnet-4-6",         label: "Claude Sonnet 4.6" },
     { id: "claude-sonnet-4-5",         label: "Claude Sonnet 4.5" },
     { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
   ],
   gemini: [
     { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
+    { id: "Gemini 2.5 Flash Lite", label: "Gemini 2.5 Flash Lite" },
+    { id: "Gemma 4 31B", label: "Gemma 4 31B" },
+    { id: "Gemma 3 2B", label: "Gemma 3 2B" },
+    { id: "Gemini 3.1 Flash Lite", label: "Gemini 3.1 Flash Lite" },
     { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
     { id: "gemini-1.5-pro",   label: "Gemini 1.5 Pro" },
     { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash" },
