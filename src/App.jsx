@@ -5,6 +5,7 @@ import { useTTS } from "./hooks/UseTTS";
 import { useChatSessions } from "./hooks/UseChatSessions";
 import { useFollowUps } from "./hooks/UseFollowUps";
 import MarkdownRenderer from "./MarkdownRenderer";
+import { ShareButton } from "./CollabSession";
 import "./App.css";
 
 // ── Provider metadata ─────────────────────────────────────────────────────────
@@ -1129,14 +1130,32 @@ export default function App() {
       {/* ── Chat area ───────────────────────────────────────────────────── */}
       <main className="chat">
         {/* Mobile top bar */}
-        <div className="chat__topbar">
+        {/* <div className="chat__topbar">
           <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)} aria-label="Open sidebar">
             <Icon.Menu />
           </button>
+          <ShareButton messages={messages} sessionTitle="QNA-AI Session" currentUser="Me" />
           <span className="chat__topbar-title">QNA-AI</span>
           <span className="chat__topbar-status">
             {PROVIDERS[selectedProvider]?.icon} {selectedModel || "no model"}
           </span>
+        </div> */}
+        <div className="chat__topbar">
+          <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)}>
+            <Icon.Menu />
+          </button>
+          <span className="chat__topbar-title">QNA-AI</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="chat__topbar-status">
+              {PROVIDERS[selectedProvider]?.icon} {selectedModel || "no model"}
+            </span>
+            {/* ADD THIS ↓ */}
+            <ShareButton
+              messages={messages}
+              sessionTitle={`${PROVIDERS[selectedProvider]?.label} / ${selectedModel}`}
+              currentUser={localStorage.getItem("username") || "Me"}
+            />
+          </div>
         </div>
 
         {/* Messages */}

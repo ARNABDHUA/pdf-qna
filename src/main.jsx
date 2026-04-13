@@ -5,6 +5,7 @@ import './index.css'
 import App from './App.jsx'
 import User from './User.jsx'
 import FileConverter from './FileConverter.jsx'
+import CollabSession from "./CollabSession";
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -15,6 +16,7 @@ createRoot(document.getElementById('root')).render(
         <Route path="/"          element={<App />} />
         <Route path="/review"          element={<User />} />
         <Route path="/converter"          element={<FileConverter />} />
+        <Route path="/collab/:sessionId" element={<CollabSession />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
 

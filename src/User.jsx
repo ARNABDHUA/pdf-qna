@@ -4,6 +4,7 @@ import { useVoiceInput } from "./hooks/UseVoiceInput";
 import { useTTS } from "./hooks/UseTTS";
 import { useChatSessions } from "./hooks/UseChatSessions";
 import MarkdownRenderer from "./MarkdownRenderer";
+import { ShareButton } from "./CollabSession";   // ← NEW
 import "./User.css";
 
 // ── Provider metadata ─────────────────────────────────────────────────────────
@@ -72,27 +73,27 @@ const CLOUD_MODELS = {
     { id: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5" },
   ],
   gemini: [
-    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
-    { id: "Gemini 2.5 Flash Lite", label: "Gemini 2.5 Flash Lite" },
-    { id: "Gemma 4 31B", label: "Gemma 4 31B" },
-    { id: "Gemma 3 2B", label: "Gemma 3 2B" },
-    { id: "Gemini 3.1 Flash Lite", label: "Gemini 3.1 Flash Lite" },
-    { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-    { id: "gemini-1.5-pro",   label: "Gemini 1.5 Pro" },
-    { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash" },
+    { id: "gemini-2.5-flash",      label: "Gemini 2.5 Flash" },
+    { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
+    { id: "gemma-4-31b",           label: "Gemma 4 31B" },
+    { id: "gemma-3-2b",            label: "Gemma 3 2B" },
+    { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+    { id: "gemini-2.0-flash",      label: "Gemini 2.0 Flash" },
+    { id: "gemini-1.5-pro",        label: "Gemini 1.5 Pro" },
+    { id: "gemini-1.5-flash",      label: "Gemini 1.5 Flash" },
   ],
   groq: [
-    { id: "llama-3.3-70b-versatile",       label: "LLaMA 3.3 70B" },
-    { id: "moonshotai/kimi-k2-instruct",       label: "kimi-k2-instruct" },
-    { id: "moonshotai/kimi-k2-instruct-0905",       label: "kimi-k2-instruct-0905" },
-    { id: "groq/compound",       label: "groq/compound" },
-    { id: "groq/compound-mini",       label: "groq/compound-mini" },
-    { id: "llama-3.1-8b-instant",          label: "LLaMA 3.1 8B Instant" },
-    { id: "meta-llama/llama-4-scout-17b-16e-instruct",                label: "llama-4" },
-    { id: "mixtral-8x7b-32768",            label: "Mixtral 8x7B" },
-    { id: "gemma2-9b-it",                  label: "Gemma2 9B" },
-    { id: "deepseek-r1-distill-llama-70b", label: "DeepSeek R1 70B" },
-    { id: "qwen-qwq-32b",                  label: "Qwen QwQ 32B" },
+    { id: "llama-3.3-70b-versatile",                    label: "LLaMA 3.3 70B" },
+    { id: "moonshotai/kimi-k2-instruct",                 label: "kimi-k2-instruct" },
+    { id: "moonshotai/kimi-k2-instruct-0905",            label: "kimi-k2-instruct-0905" },
+    { id: "groq/compound",                               label: "groq/compound" },
+    { id: "groq/compound-mini",                          label: "groq/compound-mini" },
+    { id: "llama-3.1-8b-instant",                        label: "LLaMA 3.1 8B Instant" },
+    { id: "meta-llama/llama-4-scout-17b-16e-instruct",   label: "llama-4" },
+    { id: "mixtral-8x7b-32768",                          label: "Mixtral 8x7B" },
+    { id: "gemma2-9b-it",                                label: "Gemma2 9B" },
+    { id: "deepseek-r1-distill-llama-70b",               label: "DeepSeek R1 70B" },
+    { id: "qwen-qwq-32b",                                label: "Qwen QwQ 32B" },
   ],
 };
 
@@ -143,7 +144,6 @@ function buildCodebaseContext(relevant, allFiles) {
   const fileBlocks = relevant.map(f => {
     const lines = f.content.split("\n").length;
     const header = `${"═".repeat(55)}\nFILE: ${f.path}  (${lines} lines, relevance: ${f.score.toFixed(1)})\n${"═".repeat(55)}`;
-    // Truncate very large files to first 300 lines
     const content = f.content.split("\n").slice(0, 300).join("\n");
     const truncated = f.content.split("\n").length > 300 ? "\n... [truncated to 300 lines]" : "";
     return `${header}\n${content}${truncated}`;
@@ -426,7 +426,6 @@ function CodebasePanel({ codebase, onUpload, onClear, collapsed }) {
             </div>
             <button className="codebase-loaded__clear" onClick={onClear} title="Remove codebase"><Icon.X /></button>
           </div>
-          {/* Extension breakdown */}
           <div className="codebase-ext-bar">
             {Object.entries(
               codebase.files.reduce((acc, f) => { acc[f.ext] = (acc[f.ext] || 0) + 1; return acc; }, {})
@@ -434,7 +433,6 @@ function CodebasePanel({ codebase, onUpload, onClear, collapsed }) {
               <span key={ext} className="codebase-ext-pill">.{ext} {count}</span>
             ))}
           </div>
-          {/* File tree */}
           <div className="codebase-tree">
             {codebase.files.slice(0, 15).map(f => (
               <div key={f.path} className="codebase-tree__item" title={f.path}>
@@ -463,7 +461,6 @@ function Message({ msg }) {
         {isUser ? <Icon.User /> : <Icon.Bot />}
       </div>
       <div className="message__bubble">
-        {/* Context files used */}
         {!isUser && msg.usedFiles?.length > 0 && (
           <div className="msg-context-files">
             <Icon.Search />
@@ -505,14 +502,13 @@ export default function User() {
   const [apiKeys,          setApiKeys]          = useState({});
   const [sidebarOpen,      setSidebarOpen]      = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [mode,             setMode]             = useState("chat"); // "chat" | "codebase"
+  const [mode,             setMode]             = useState("chat");
 
-  // Codebase state (in-memory only — not persisted)
   const [codebase,   setCodebase]   = useState(null);
   const [isIndexing, setIsIndexing] = useState(false);
   const [indexError, setIndexError] = useState(null);
 
-  const historyRef     = useRef({});
+  const historyRef      = useRef({});
   const selectedProvRef = useRef(selectedProvider);
   const selectedModRef  = useRef(selectedModel);
   const apiKeysRef      = useRef(apiKeys);
@@ -543,7 +539,7 @@ export default function User() {
       }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Folder upload handler ─────────────────────────────────────────────────
+  // ── Folder upload ─────────────────────────────────────────────────────────
   const handleFolderUpload = useCallback(async (e) => {
     const fileList = Array.from(e.target.files || []);
     if (!fileList.length) return;
@@ -552,14 +548,13 @@ export default function User() {
     setIndexError(null);
 
     try {
-      const folderName = fileList[0].webkitRelativePath?.split("/")[0] || "codebase";
+      const folderName  = fileList[0].webkitRelativePath?.split("/")[0] || "codebase";
       const parsedFiles = [];
-      let totalBytes = 0;
+      let   totalBytes  = 0;
 
       for (const file of fileList) {
         const relPath = file.webkitRelativePath || file.name;
         const parts   = relPath.split("/");
-        // Skip ignored dirs and binary/huge files
         if (parts.some(p => IGNORE_DIRS.has(p))) continue;
         if (file.size > 400 * 1024) continue;
         const ext = file.name.split(".").pop().toLowerCase();
@@ -584,15 +579,12 @@ export default function User() {
       setMode("codebase");
       modeRef.current = "codebase";
 
-      // Extension summary
-      const extMap   = parsedFiles.reduce((acc, f) => { acc[f.ext] = (acc[f.ext] || 0) + 1; return acc; }, {});
+      const extMap     = parsedFiles.reduce((acc, f) => { acc[f.ext] = (acc[f.ext] || 0) + 1; return acc; }, {});
       const extSummary = Object.entries(extMap).sort((a, b) => b[1] - a[1])
         .slice(0, 6).map(([e, c]) => `.${e}×${c}`).join("  ");
 
       setMessages(prev => [...prev, {
-        id: Date.now() + 1,
-        role: "ai",
-        mode: "codebase",
+        id: Date.now() + 1, role: "ai", mode: "codebase",
         content: `## 📁 "${folderName}" indexed successfully\n\n**${parsedFiles.length} files** · ${(totalBytes / 1024).toFixed(0)} KB\n\n\`${extSummary}\`\n\n**Try asking:**\n- *"Give me an overview of this codebase"*\n- *"Explain the main entry point"*\n- *"What does [filename] do?"*\n- *"Are there any security issues?"*\n- *"How is state managed in this project?"*\n- *"List all API endpoints"*`,
       }]);
     } catch (err) {
@@ -603,10 +595,8 @@ export default function User() {
   }, [setMessages]);
 
   const handleClearCodebase = useCallback(() => {
-    setCodebase(null);
-    codebaseRef.current = null;
-    setMode("chat");
-    modeRef.current = "chat";
+    setCodebase(null); codebaseRef.current = null;
+    setMode("chat");   modeRef.current = "chat";
   }, []);
 
   // ── Provider handlers ─────────────────────────────────────────────────────
@@ -691,6 +681,11 @@ export default function User() {
   const canSend  = !isStreaming && !!selectedModel && !!input.trim();
   const username = localStorage.getItem("username") || "User";
 
+  // ── Share session title ───────────────────────────────────────────────────
+  const shareTitle = mode === "codebase" && codebase
+    ? `Coding · ${codebase.name} · ${prov.label}`
+    : `Coding · ${prov.label} / ${selectedModel}`;
+
   return (
     <div className="app">
       <div className={`sidebar-overlay${sidebarOpen ? "" : " hidden"}`} onClick={() => setSidebarOpen(false)} />
@@ -746,15 +741,11 @@ export default function User() {
           </div>
         )}
 
-        {/* Codebase panel */}
         <CodebasePanel codebase={codebase} onUpload={handleFolderUpload}
           onClear={handleClearCodebase} collapsed={sidebarCollapsed} />
 
         {isIndexing && !sidebarCollapsed && (
-          <div className="codebase-indexing">
-            <div className="cb-spinner" />
-            <span>Indexing files…</span>
-          </div>
+          <div className="codebase-indexing"><div className="cb-spinner" /><span>Indexing files…</span></div>
         )}
         {indexError && !sidebarCollapsed && (
           <div className="codebase-error"><Icon.AlertCircle /> {indexError}</div>
@@ -763,12 +754,22 @@ export default function User() {
 
       {/* ── Chat ────────────────────────────────────────────────────────── */}
       <main className="chat">
+
+        {/* ── Topbar — Share button added here ── */}
         <div className="chat__topbar">
           <button className="sidebar-toggle" onClick={() => setSidebarOpen(true)}><Icon.Menu /></button>
           <span className="chat__topbar-title">
             {mode === "codebase" && codebase ? `📁 ${codebase.name}` : "QNA-AI · Coding"}
           </span>
-          <span className="chat__topbar-status">{prov.icon} {selectedModel || "no model"}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className="chat__topbar-status">{prov.icon} {selectedModel || "no model"}</span>
+            {/* ── Share button ── */}
+            <ShareButton
+              messages={messages}
+              sessionTitle={shareTitle}
+              currentUser={username}
+            />
+          </div>
         </div>
 
         {/* Mode bar */}
