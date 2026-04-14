@@ -644,13 +644,23 @@ html, body, #root {
   min-width: 0;
 }
 .message--ai .message__bubble {
-  background: var(--bg-2); border: 1px solid var(--border);
+  background: #1a1d27 !important;
+  border: 1px solid var(--border, #22252e) !important;
   border-radius: 4px var(--radius-lg) var(--radius-lg) var(--radius-lg);
+}
+.message--ai .message__bubble .message__text,
+.message--ai .message__bubble p,
+.message--ai .message__bubble .md-p {
+  color: #e8eaf0 !important;
+  text-align: left !important;
 }
 .message--user .message__bubble {
   background: linear-gradient(135deg, #2a3f6f, #1e2d50);
   border: 1px solid rgba(91,138,240,0.3);
   border-radius: var(--radius-lg) 4px var(--radius-lg) var(--radius-lg);
+}
+.message--ai .message__bubble * {
+  text-align: left !important;
 }
 
 .message__text { font-size: 14px; line-height: 1.75; color: var(--text); white-space: pre-wrap; word-break: break-word; }
