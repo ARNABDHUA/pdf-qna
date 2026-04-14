@@ -1676,3 +1676,37 @@ html, body, #root {
 .md-table strong { color: var(--color-text); font-weight: 700; }
 .md-table em     { color: var(--color-text-2); font-style: italic; }
 .md-table .md-inline-code { font-size: 11px; }
+
+
+/* ── Mobile: force dark code blocks ─────────────────────────────────────── */
+@media (max-width: 768px) {
+  .md-code-block {
+    background: #0d1117 !important;
+    border-color: #30363d !important;
+  }
+
+  .md-code-block__pre {
+    background: #0d1117 !important;
+  }
+
+  .md-code-block__pre code {
+    color: #c9d1d9 !important;
+    background: transparent !important;
+  }
+
+  .md-code-block__header {
+    background: #161b22 !important;
+    border-bottom-color: #30363d !important;
+  }
+
+  .md-code-block__lang {
+    color: #a78bfa !important;
+  }
+
+  /* Also fix inline code on mobile */
+  .md-inline-code {
+    background: rgba(91, 138, 240, 0.15) !important;
+    color: #93c5fd !important;
+    border-color: rgba(91, 138, 240, 0.3) !important;
+  }
+}
