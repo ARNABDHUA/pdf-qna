@@ -53,6 +53,11 @@ const Icon = {
   // New icons for drafting and brief modes
   PenTool:     () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>,
   BookOpen:    () => <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>,
+  YouTube: () => (
+  <svg viewBox="0 0 24 24" fill="currentColor" style={{ width: "100%", height: "100%" }}>
+    <path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/>
+  </svg>
+),
 };
 
 // ── Sub-components ────────────────────────────────────────────────────────────
@@ -634,6 +639,7 @@ function NavLinks({ collapsed }) {
   const links = [
     { label: "Code Review",    path: "/review",    icon: <Icon.Code />,    color: "#34d399", desc: "AI-powered review"  },
     { label: "File Converter", path: "/converter", icon: <Icon.Shuffle />, color: "#a78bfa", desc: "Convert any format" },
+    { label: "YouTube → PDF", path: "/youtube", icon: <Icon.YouTube />, color: "#e53e3e", desc: "Transcribe & export" },
   ];
 
   if (collapsed) {

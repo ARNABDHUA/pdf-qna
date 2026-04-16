@@ -6,6 +6,7 @@ import App from './App.jsx'
 import User from './User.jsx'
 import FileConverter from './FileConverter.jsx'
 import CollabSession from "./CollabSession";
+import YouTubeConverter from "./YouTubeConverter";
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -17,6 +18,7 @@ createRoot(document.getElementById('root')).render(
         <Route path="/review"          element={<User />} />
         <Route path="/converter"          element={<FileConverter />} />
         <Route path="/collab/:sessionId" element={<CollabSession />} />
+        <Route path="/youtube" element={<YouTubeConverter />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
 
