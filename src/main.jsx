@@ -7,6 +7,7 @@ import User from './User.jsx'
 import FileConverter from './FileConverter.jsx'
 import CollabSession from "./CollabSession";
 import YouTubeConverter from "./YouTubeConverter";
+import ExpenseTracker from "./ExpenseTracker";
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -19,6 +20,7 @@ createRoot(document.getElementById('root')).render(
         <Route path="/converter"          element={<FileConverter />} />
         <Route path="/collab/:sessionId" element={<CollabSession />} />
         <Route path="/youtube" element={<YouTubeConverter />} />
+        <Route path="/expenses" element={<ExpenseTracker />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
 
