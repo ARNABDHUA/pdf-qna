@@ -68,11 +68,13 @@ const styles = `
     gap: 4px;
     background: #0a0a0a;
     border-bottom: 1px solid #1a1a1a;
+    flex-wrap: wrap;
   }
   .fc-tab {
     flex: 1;
-    padding: 9px 6px;
-    font-size: 12px;
+    min-width: 0;
+    padding: 9px 4px;
+    font-size: 11px;
     font-weight: 500;
     background: transparent;
     border: none;
@@ -81,6 +83,9 @@ const styles = `
     border-radius: 8px;
     transition: all 0.18s;
     letter-spacing: 0.01em;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .fc-tab:hover {
     color: #aaa;
@@ -211,6 +216,16 @@ const styles = `
   .fc-fp-clear:hover {
     color: #888;
   }
+  .fc-info-box {
+    background: #0d1a14;
+    border: 1px solid #1a3326;
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 1rem;
+    font-size: 12px;
+    color: #3d9a6f;
+    line-height: 1.5;
+  }
   .fc-convert-btn {
     width: 100%;
     padding: 14px;
@@ -282,9 +297,51 @@ const styles = `
   @media (max-width: 400px) {
     .fc-body { padding: 1rem; }
     .fc-brand { margin-bottom: 1.25rem; }
-    .fc-tab { font-size: 11px; padding: 8px 4px; }
+    .fc-tab { font-size: 10px; padding: 8px 3px; }
   }
 `;
+
+const TABS = ['text-pdf', 'word-pdf', 'pdf-word', 'pdf-img-pdf'];
+
+const modeLabels = {
+  'text-pdf':    'Text → PDF',
+  'word-pdf':    'Word → PDF',
+  'pdf-word':    'PDF → Word',
+  'pdf-img-pdf': 'Scan → PDF',
+};
+
+const fmtLabels = {
+  'text-pdf':    'PDF',
+  'word-pdf':    'PDF',
+  'pdf-word':    'Word (.docx)',
+  'pdf-img-pdf': 'Searchable PDF',
+};
+
+const secLabels = {
+  'text-pdf':    'Paste your text',
+  'word-pdf':    'Upload Word file',
+  'pdf-word':    'Upload PDF file',
+  'pdf-img-pdf': 'Upload scanned PDF',
+};
+
+const dropLabels = {
+  'word-pdf':    '.docx',
+  'pdf-word':    '.pdf',
+  'pdf-img-pdf': '.pdf (image/scanned)',
+};
+
+const acceptTypes = {
+  'word-pdf':    '.docx',
+  'pdf-word':    '.pdf',
+  'pdf-img-pdf': '.pdf',
+};
+
+const downloadNames = {
+  'text-pdf':    'result.pdf',
+  'word-pdf':    'result.pdf',
+  'pdf-word':    'result.docx',
+  'pdf-img-pdf': 'searchable.pdf',
+};
 
 const FileConverter = () => {
   const [activeTab, setActiveTab] = useState('text-pdf');
@@ -295,12 +352,8 @@ const FileConverter = () => {
 
   const navigate = useNavigate();
 
-
-  const modeLabels = { 'text-pdf': 'Text → PDF', 'word-pdf': 'Word → PDF', 'pdf-word': 'PDF → Word' };
-  const fmtLabels = { 'text-pdf': 'PDF', 'word-pdf': 'PDF', 'pdf-word': 'Word (.docx)' };
-  const secLabels = { 'text-pdf': 'Paste your text', 'word-pdf': 'Upload Word file', 'pdf-word': 'Upload PDF file' };
-
-  const isReady = activeTab === 'text-pdf' ? text.trim().length > 0 : !!file;
+  const isTextTab = activeTab === 'text-pdf';
+  const isReady = isTextTab ? text.trim().length > 0 : !!file;
 
   const getStatus = () => {
     if (loading) return { label: 'Converting…', live: true };
@@ -327,14 +380,11 @@ const FileConverter = () => {
   };
 
   const handleAction = async () => {
-    // setLoading(true);
-    // const baseUrl ="http://localhost:8000"||"https://pdf-qna-backend.onrender.com" ;
-    // let url = "";
-    // let options = {};
     setLoading(true);
-    const baseUrl = "https://pdf-qna-backend.onrender.com" || "http://localhost:8000";  // ← swapped
+    const baseUrl = "https://pdf-qna-backend.onrender.com";
     let url = "";
     let options = {};
+
     try {
       if (activeTab === 'text-pdf') {
         url = `${baseUrl}/convert/text-to-pdf?text=${encodeURIComponent(text)}`;
@@ -342,21 +392,33 @@ const FileConverter = () => {
       } else {
         const formData = new FormData();
         formData.append('file', file);
-        url = activeTab === 'word-pdf' ? `${baseUrl}/convert/word-to-pdf` : `${baseUrl}/convert/pdf-to-word`;
+
+        if (activeTab === 'word-pdf') {
+          url = `${baseUrl}/convert/word-to-pdf`;
+        } else if (activeTab === 'pdf-word') {
+          url = `${baseUrl}/convert/pdf-to-word`;
+        } else if (activeTab === 'pdf-img-pdf') {
+          url = `${baseUrl}/convert/pdf-image-to-pdf`;
+        }
+
         options = { method: 'POST', body: formData };
       }
 
       const response = await fetch(url, options);
-      if (!response.ok) throw new Error("Conversion failed");
+      if (!response.ok) {
+        const errText = await response.text();
+        throw new Error(errText || "Conversion failed");
+      }
 
       const blob = await response.blob();
       const downloadUrl = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = downloadUrl;
-      a.download = activeTab.endsWith('pdf') ? "result.pdf" : "result.docx";
+      a.download = downloadNames[activeTab];
       document.body.appendChild(a);
       a.click();
       a.remove();
+      window.URL.revokeObjectURL(downloadUrl);
     } catch (err) {
       alert(err.message);
     } finally {
@@ -393,7 +455,7 @@ const FileConverter = () => {
 
           <div className="fc-card">
             <div className="fc-tabs">
-              {['text-pdf', 'word-pdf', 'pdf-word'].map(t => (
+              {TABS.map(t => (
                 <button
                   key={t}
                   className={`fc-tab${activeTab === t ? ' active' : ''}`}
@@ -407,6 +469,7 @@ const FileConverter = () => {
             <div className="fc-body">
               <div className="fc-section-label">{secLabels[activeTab]}</div>
 
+              {/* Text input for text-pdf */}
               {activeTab === 'text-pdf' && (
                 <>
                   <textarea
@@ -419,10 +482,18 @@ const FileConverter = () => {
                 </>
               )}
 
-              {activeTab !== 'text-pdf' && !file && (
+              {/* Info hint for scan tab */}
+              {activeTab === 'pdf-img-pdf' && (
+                <div className="fc-info-box">
+                  Upload a scanned or image-only PDF. The text will be extracted via OCR and returned as a new searchable PDF. Works best with clear, printed text.
+                </div>
+              )}
+
+              {/* File drop zone */}
+              {!isTextTab && !file && (
                 <div
                   className={`fc-drop-zone${drag ? ' drag' : ''}`}
-                  onClick={() => document.getElementById(`fc-file-input`).click()}
+                  onClick={() => document.getElementById('fc-file-input').click()}
                   onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
                   onDragLeave={() => setDrag(false)}
                   onDrop={handleDrop}
@@ -435,23 +506,25 @@ const FileConverter = () => {
                     </svg>
                   </div>
                   <div className="fc-drop-label">
-                    Drop your {activeTab === 'word-pdf' ? '.docx' : '.pdf'} file
+                    Drop your {dropLabels[activeTab]} file
                   </div>
                   <div className="fc-drop-sub">or click to browse</div>
                 </div>
               )}
 
-              {activeTab !== 'text-pdf' && (
+              {/* Hidden file input */}
+              {!isTextTab && (
                 <input
                   id="fc-file-input"
                   type="file"
                   hidden
-                  accept={activeTab === 'word-pdf' ? ".docx" : ".pdf"}
+                  accept={acceptTypes[activeTab]}
                   onChange={handleFileChange}
                 />
               )}
 
-              {activeTab !== 'text-pdf' && file && (
+              {/* Selected file pill */}
+              {!isTextTab && file && (
                 <div className="fc-file-pill">
                   <span className="fc-fp-dot" />
                   <span className="fc-fp-name">{file.name}</span>
