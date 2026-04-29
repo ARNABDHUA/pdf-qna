@@ -31,35 +31,26 @@ const API_BASE = "https://pdf-qna-backend.onrender.com" || "http://localhost:800
 
 // ══════════════════════════════════════════════════════════════════════════════
 // ── FREE PROVIDER CONFIG ── (hidden from user, rotates automatically)
-// Replace these with your actual Groq API keys
 // ══════════════════════════════════════════════════════════════════════════════
-// const FREE_GROQ_KEYS = [
-//   "gsk_your_first_groq_key_here",   // Key 1
-//   "gsk_your_second_groq_key_here",  // Key 2
-//   "gsk_your_third_groq_key_here",   // Key 3
-// ];
-
 const FREE_GROQ_KEYS = import.meta.env.VITE_GROQ_KEYS.split(",")
-// The two Groq models exposed as "Model 1" and "Model 2" under Free
 const FREE_GROQ_MODELS = [
-  "llama-3.3-70b-versatile",  // Model 1 — LLaMA 3.3 70B
-  "llama-3.1-8b-instant",     // Model 2 — LLaMA 3.1 8B
+  "llama-3.3-70b-versatile",
+  "llama-3.1-8b-instant",
 ];
-// Rotation order: [key0,model0] → [key0,model1] → [key1,model0] → [key1,model1] → [key2,model0] → [key2,model1]
 const FREE_ROTATION = FREE_GROQ_KEYS.flatMap(key =>
   FREE_GROQ_MODELS.map(model => ({ key, model }))
 );
 
 // ── AI Providers ───────────────────────────────────────────────────────────────
 const PROVIDERS = {
-  free:      { label:"Free",    icon:"✦",  color:"#22c55e" },   // ← NEW
+  free:      { label:"Free",    icon:"✦",  color:"#22c55e" },
   groq:      { label:"Groq",    icon:"⚡", color:"#f97316" },
   gemini:    { label:"Gemini",  icon:"✧",  color:"#3b82f6" },
   anthropic: { label:"Claude",  icon:"◆",  color:"#f59e0b" },
   openai:    { label:"ChatGPT", icon:"✦",  color:"#10b981" },
 };
 const CLOUD_MODELS = {
-  free:      [{ id:"free-model1", label:"Model 1 (Fast & Smart)" }, { id:"free-model2", label:"Model 2 (Lightweight)" }],  // ← NEW
+  free:      [{ id:"free-model1", label:"Model 1 (Fast & Smart)" }, { id:"free-model2", label:"Model 2 (Lightweight)" }],
   groq:      [{ id:"llama-3.3-70b-versatile",label:"LLaMA 3.3 70B"},{ id:"llama-3.1-8b-instant",label:"LLaMA 3.1 8B"},{ id:"mixtral-8x7b-32768",label:"Mixtral 8x7B"},{ id:"deepseek-r1-distill-llama-70b",label:"DeepSeek R1 70B"}],
   gemini:    [{ id:"gemini-2.5-flash",label:"Gemini 2.5 Flash"},{ id:"gemini-2.0-flash",label:"Gemini 2.0 Flash"},{ id:"gemini-1.5-pro",label:"Gemini 1.5 Pro"},{ id:"gemini-1.5-flash",label:"Gemini 1.5 Flash"}],
   anthropic: [{ id:"claude-sonnet-4-20250514",label:"Claude Sonnet 4"},{ id:"claude-haiku-4-5-20251001",label:"Claude Haiku 4.5"},{ id:"claude-opus-4-5",label:"Claude Opus 4.5"}],
@@ -210,7 +201,12 @@ CURRENT IST CONTEXT:
 - Today: ${ist.todayDateIST} | Yesterday: ${ist.yesterdayDateIST}
 - todayNoonMs: ${ist.todayNoonMs} | yesterdayNoonMs: ${ist.yesterdayNoonMs}
 
-DATE RULES: no date→${ist.nowMs} | today→${ist.todayNoonMs} | yesterday→${ist.yesterdayNoonMs} | "N days ago"→todayNoon-(N*86400000) | NEVER guess dates.
+DATE/TIME RULES:
+- If user does NOT mention any time or date → ALWAYS use nowMs (${ist.nowMs}) as the timestamp. This gives the exact current Indian time.
+- "today" → use todayNoonMs (${ist.todayNoonMs})
+- "yesterday" → use yesterdayNoonMs (${ist.yesterdayNoonMs})
+- "N days ago" → todayNoon - (N * 86400000)
+- NEVER guess or fabricate timestamps. If no date/time mentioned, use nowMs exactly.
 
 ${expenseSummary}
 
@@ -227,17 +223,26 @@ ACCOUNT DEDUCTION RULES (only include account_action when accounts exist):
 - "paid X from ICICI" / "from SBI" / "from [name]" → use account matching that name
 - "add X" / "got X" / "received X" (no account mentioned) → add to default account
 - "add X to ICICI" / "add X to [name]" → add to account matching that name
-- If required account type (cash/wallet) not in accounts list → set account_not_found: true, account_type_missing: "wallet" (or "cash")
-
-TRANSFER RULE: If user asks to transfer money between accounts (e.g. "transfer ₹500 from SBI to ICICI"), respond with:
-<transfer_request>{"from":"<account name>","to":"<account name>","amount":<number>,"note":"<optional note>"}</transfer_request>
-And a friendly message explaining the transfer was initiated (or ask them to use the ↔ Transfer button in the 💳 Accounts tab for confirmation).` : `TRANSFER/ACCOUNT RULE: If the user asks to transfer money between accounts OR mentions any account name (SBI, ICICI, wallet, cash account, etc.), you MUST respond with exactly this message and nothing else:
+- If required account type (cash/wallet) not in accounts list → set account_not_found: true, account_type_missing: "wallet" (or "cash")` : `TRANSFER/ACCOUNT RULE: If the user asks to transfer money between accounts OR mentions any account name (SBI, ICICI, wallet, cash account, etc.), you MUST respond with exactly this message and nothing else:
 "⚠️ You don't have any accounts set up yet! Please add your accounts first in the 💳 **Accounts** tab (tap it above), then come back to transfer or track by account. Adding accounts is quick and optional — but needed for balance tracking! 🏦"`}
 
+TRANSFER RULE (STRICT — APPLIES EVEN WHEN ACCOUNTS EXIST):
+If the user asks to transfer money between accounts (e.g. "transfer ₹500 from SBI to ICICI", "move money from wallet to bank", "send 1000 from X to Y"), you MUST respond with ONLY this message and nothing else — do NOT emit any JSON or <expense_data> block:
+"🔄 To transfer money between accounts, please go to the **💳 Accounts** tab and tap the **↔ Transfer** button. This ensures your balances are updated correctly!"
+
 LOAN/SPLIT DETECTION:
-- "pizza for Ram and Anand and me ₹900" → detect names (exclude me/I/myself), split equally among all including user
-- Each person owes: total ÷ (names+1)
-- Repayments: "Anand paid me back ₹300" → loan_repayment block
+- "pizza for Ram and Anand and me ₹900" → detect ONLY other people's names (exclude me/I/myself/you — the user is never added to splits)
+- Each OTHER person owes: total ÷ (number of other people + 1, counting the user as one participant)
+- Example: "cooldrink for Anand and me ₹40" → total=40, participants=2 (Anand + user), Anand owes ₹20. Only add Anand to splits. Do NOT add "me" or "you" to splits.
+- Example: "pizza for Ram, Anand and me ₹900" → participants=3, each=₹300. Add only Ram(₹300) and Anand(₹300) to splits. Not the user.
+- Repayments: "Anand paid me back ₹300" or "Anand pay ₹20" → loan_repayment block
+
+REPAYMENT RULE ("X paid me" / "X pay amount"):
+When someone repays (e.g. "Anand pay 20", "Ram paid me ₹300"), emit a <loan_repayment> block AND also an <expense_data> block treating it as income (so it's recorded in the Records section and credited to the default account):
+- type: "income"
+- category: "Other"
+- description: "<Name> repaid ₹<amount>"
+- account_action: credit to default account (delta: +amount)
 
 ANALYSIS RESPONSE RULES (when user asks a question about their spending or account):
 - Use the EXPENSE HISTORY and ACCOUNT BALANCES data above to give exact, accurate answers
@@ -254,11 +259,14 @@ ${hasAccounts ? `On normal expense/income respond with:
 
 ${hasAccounts ? `On split expense respond with BOTH blocks:
 <expense_data>{"amount":<total>,"category":"<cat>","description":"<desc>","reason":"","type":"expense","timestamp":<ms>,"account_action":{"accountId":"<id>","accountName":"<name>","delta":<negative total>,"account_not_found":false,"account_type_missing":""}}</expense_data>
-<loan_data>{"description":"<what was split>","timestamp":<ms>,"splits":[{"name":"<Name>","amount":<share>,"type":"owe"}]}</loan_data>` : `On split expense respond with BOTH blocks:
+<loan_data>{"description":"<what was split>","timestamp":<ms>,"splits":[{"name":"<OtherPersonName>","amount":<their share>,"type":"owe"}]}</loan_data>
+IMPORTANT: splits array must contain ONLY other people — never include the user/me/myself.` : `On split expense respond with BOTH blocks:
 <expense_data>{"amount":<total>,"category":"<cat>","description":"<desc>","reason":"","type":"expense","timestamp":<ms>}</expense_data>
-<loan_data>{"description":"<what was split>","timestamp":<ms>,"splits":[{"name":"<Name>","amount":<share>,"type":"owe"}]}</loan_data>`}
+<loan_data>{"description":"<what was split>","timestamp":<ms>,"splits":[{"name":"<OtherPersonName>","amount":<their share>,"type":"owe"}]}</loan_data>
+IMPORTANT: splits array must contain ONLY other people — never include the user/me/myself.`}
 
-On repayment respond with ONLY:
+On repayment ("X paid me" / "X pay amount") respond with BOTH blocks:
+<expense_data>{"amount":<amt>,"category":"Other","description":"<Name> repaid ₹<amt>","reason":"Loan repayment received","type":"income","timestamp":<ms>${hasAccounts && defaultAcc ? `,"account_action":{"accountId":"${defaultAcc.id}","accountName":"${defaultAcc.name}","delta":<+amt>,"account_not_found":false,"account_type_missing":""}` : ""}}</expense_data>
 <loan_repayment>{"name":"<Name>","amount":<amt>,"timestamp":<ms>}</loan_repayment>
 
 For analysis/questions → respond helpfully with exact data from EXPENSE HISTORY and ACCOUNT BALANCES, NO JSON block.`;
@@ -271,7 +279,6 @@ async function callFreeAI(history, userMsg, categories, accounts, defaultAccount
   const sys = buildSystemPrompt(categories, accounts, defaultAccountId, expenses);
   const messages = [...history.slice(-8), { role: "user", content: userMsg }];
 
-  // Rate-limit / quota error codes from Groq
   const isRateLimit = (status, body) =>
     status === 429 ||
     status === 503 ||
@@ -284,7 +291,6 @@ async function callFreeAI(history, userMsg, categories, accounts, defaultAccount
 
   let lastError = null;
   for (const { key, model } of FREE_ROTATION) {
-    // Skip unconfigured placeholder keys
     if (!key || key.startsWith("gsk_your_")) continue;
 
     try {
@@ -301,7 +307,6 @@ async function callFreeAI(history, userMsg, categories, accounts, defaultAccount
       const d = await res.json();
 
       if (isRateLimit(res.status, d)) {
-        // Rate limited — try next slot
         lastError = new Error(d.error?.message || `Rate limit on key/model slot`);
         continue;
       }
@@ -310,13 +315,11 @@ async function callFreeAI(history, userMsg, categories, accounts, defaultAccount
 
       return d.choices?.[0]?.message?.content || "";
     } catch (err) {
-      // Network errors — try next slot
       lastError = err;
       continue;
     }
   }
 
-  // All slots exhausted
   throw new Error(
     lastError?.message?.includes("Rate limit") || lastError?.message?.includes("quota")
       ? "⚡ All free slots are rate-limited right now. Please wait a moment and try again, or add your own API key in Settings."
@@ -1126,12 +1129,11 @@ export default function ExpenseTracker() {
     return { accounts:[], months:{}, defaultAccountId: null };
   });
 
-  // Default to "free" provider so users get started without any API key
   const [selectedProvider, setSelectedProvider] = useState("free");
   const [selectedModel,    setSelectedModel]    = useState(CLOUD_MODELS.free[0].id);
   const [apiKeys, setApiKeys] = useState(()=>{ try{return JSON.parse(localStorage.getItem(API_KEYS_KEY)||"{}");}catch{return {};} });
 
-  const [messages, setMessages] = useState([{ role:"assistant", content:"👋 **Namaste!** I'm your AI expense tracker.\n\nTell me things like:\n- *\"Paid ₹150 for food\"*\n- *\"Paid ₹50 for auto cash\"* (deducts from cash account if added)\n- *\"Pizza for Ram and Anand and me ₹900\"* (split!)\n- *\"How much did I spend on food last month?\"* (I'll analyze your data!)\n- *\"What is my SBI balance?\"* (shows balance + last 5 transactions!)\n- *\"Transfer ₹500 from SBI to ICICI\"* (needs accounts set up first)\n\nAccounts are **optional** — add them in 💳 Accounts tab to track balances.", id:uid() }]);
+  const [messages, setMessages] = useState([{ role:"assistant", content:"👋 **Namaste!** I'm your AI expense tracker.\n\nTell me things like:\n- *\"Paid ₹150 for food\"*\n- *\"Paid ₹50 for auto cash\"* (deducts from cash account if added)\n- *\"Pizza for Ram and Anand and me ₹900\"* (split!)\n- *\"How much did I spend on food last month?\"* (I'll analyze your data!)\n- *\"What is my SBI balance?\"* (shows balance + last 5 transactions!)\n- *\"Anand pay 20\"* (marks repayment + adds to Records & account!)\n\nAccounts are **optional** — add them in 💳 Accounts tab to track balances.", id:uid() }]);
   const [input,        setInput]       = useState("");
   const [loading,      setLoading]     = useState(false);
   const [tab,          setTab]         = useState("chat");
@@ -1264,7 +1266,9 @@ export default function ExpenseTracker() {
   }, []);
   const stopVoice = useCallback(() => { recognRef.current?.stop(); setIsListening(false); }, []);
 
+  // ── handleRepay: marks repayment in splits AND adds income record + credits account ──
   const handleRepay = useCallback((name, amount) => {
+    // 1. Update loan splits
     setLoans(prev => {
       const updated=[...prev]; let remaining=amount;
       for(let i=updated.length-1;i>=0&&remaining>0;i--){
@@ -1277,18 +1281,66 @@ export default function ExpenseTracker() {
       }
       return updated;
     });
-    showToast(`✓ Marked ${name} paid ${fmt(amount)}`,"success");
+
+    // 2. Add income record to expenses (Records section)
+    const repayEntry = {
+      id: uid(),
+      amount,
+      category: "Other",
+      description: `${name} repaid ₹${amount}`,
+      reason: "Loan repayment received",
+      type: "income",
+      timestamp: Date.now(),
+      provider: "system",
+      model: "repayment",
+      accountId: null,
+      accountName: null,
+    };
+
+    // 3. Also credit to default account if available
+    setBudget(prev => {
+      if (!prev.accounts.length || !prev.defaultAccountId) {
+        // No account — just store entry without account info
+        return prev;
+      }
+      const curMonth = currentMonthKey();
+      const accId = prev.defaultAccountId;
+      const accName = prev.accounts.find(a => a.id === accId)?.name || "";
+
+      // Patch entry with account info
+      repayEntry.accountId = accId;
+      repayEntry.accountName = accName;
+
+      const updAccounts = prev.accounts.map(a =>
+        a.id === accId ? { ...a, currentBalance: a.currentBalance + amount } : a
+      );
+      const m = prev.months[curMonth] || { accounts: [], transfers: [] };
+      const monthAccExists = m.accounts.find(a => a.id === accId);
+      const newMonthAccounts = monthAccExists
+        ? m.accounts.map(a => a.id === accId ? { ...a, currentBalance: a.currentBalance + amount } : a)
+        : [...m.accounts, { id: accId, currentBalance: (prev.accounts.find(a=>a.id===accId)?.currentBalance||0) + amount, carryover: 0 }];
+
+      return {
+        ...prev,
+        accounts: updAccounts,
+        months: { ...prev.months, [curMonth]: { ...m, accounts: newMonthAccounts } }
+      };
+    });
+
+    setExpenses(prev => [repayEntry, ...prev].sort((a, b) => b.timestamp - a.timestamp));
+    showToast(`✓ Marked ${name} paid ${fmt(amount)} · added to Records`, "success");
   }, [showToast]);
 
   const handleDeleteLoan = useCallback((loanId) => { setLoans(prev=>prev.filter(l=>l.id!==loanId)); }, []);
 
+  // ── Transfer detection — for showing redirect message in chat ──
   const detectTransferIntent = useCallback((text) => {
     const lower = text.toLowerCase();
-    const transferKeywords = ["transfer", "move", "send money", "from sbi", "from icici", "from hdfc", "from axis", "from wallet", "to sbi", "to icici", "to hdfc", "to wallet", "to cash"];
-    const accountNameKeywords = ["sbi", "icici", "hdfc", "axis", "kotak", "pnb", "bank of baroda", "canara", "union bank"];
+    const transferKeywords = ["transfer", "move money", "send money"];
     const hasTransferWord = transferKeywords.some(kw => lower.includes(kw));
-    const hasAccountName = accountNameKeywords.some(kw => lower.includes(kw));
-    return hasTransferWord || (hasAccountName && (lower.includes("from") || lower.includes("to")));
+    // Also catch "from X to Y" patterns with account names
+    const fromToPattern = /from\s+\w+\s+to\s+\w+/i.test(text);
+    return hasTransferWord || fromToPattern;
   }, []);
 
   const detectAccountQuery = useCallback((text) => {
@@ -1308,6 +1360,15 @@ export default function ExpenseTracker() {
     if(!text||loading) return;
     setInput("");
 
+    // ── Strict transfer redirect (works regardless of account setup) ──
+    if (detectTransferIntent(text)) {
+      setMessages(p=>[...p,
+        {role:"user",content:text,id:uid()},
+        {role:"assistant",content:"🔄 To transfer money between accounts, please go to the **💳 Accounts** tab and tap the **↔ Transfer** button. This ensures your balances are updated correctly!",id:uid()}
+      ]);
+      return;
+    }
+
     if (budget.accounts.length === 0 && detectTransferIntent(text)) {
       setMessages(p=>[...p,
         {role:"user",content:text,id:uid()},
@@ -1316,79 +1377,8 @@ export default function ExpenseTracker() {
       return;
     }
 
-    // ── FREE provider: no API key needed, uses rotation ──
-    if (selectedProvider === "free") {
-      setMessages(p=>[...p,{role:"user",content:text,id:uid()}]);
-      setLoading(true);
-      historyRef.current=[...historyRef.current,{role:"user",content:text}];
-      try {
-        const aiText = await callFreeAI(
-          historyRef.current, text, categories,
-          budget.accounts, budget.defaultAccountId, expenses
-        );
-        historyRef.current=[...historyRef.current,{role:"assistant",content:aiText}];
-
-        let newExpense=null;
-        let accountMsg = "";
-        const bm=aiText.match(/<expense_data>([\s\S]*?)<\/expense_data>/);
-        if(bm){ try{
-          const p=JSON.parse(bm[1]);
-          if(p.amount&&p.amount>0){
-            const ts=p.timestamp&&Number.isFinite(p.timestamp)&&p.timestamp>0?p.timestamp:Date.now();
-            const accountId  = p.account_action?.accountId  || null;
-            const accountName= p.account_action?.accountName|| null;
-            newExpense={
-              id:uid(), amount:p.amount,
-              category:categories.includes(p.category)?p.category:"Other",
-              description:(p.description||text).slice(0,80),
-              reason:(p.reason||"").slice(0,100),
-              type:p.type==="income"?"income":"expense",
-              timestamp:ts,
-              provider:"free", model:"free",
-              accountId, accountName,
-            };
-            setExpenses(p=>[newExpense,...p].sort((a,b)=>b.timestamp-a.timestamp));
-            if (p.account_action && budget.accounts.length > 0) {
-              const result = applyAccountAction(p.account_action);
-              if (!result.applied && result.message) accountMsg = "\n\n" + result.message;
-              else if (result.applied && result.message) accountMsg = "\n\n💳 " + result.message;
-            }
-          }
-        }catch{} }
-
-        let newLoan=null;
-        const lm=aiText.match(/<loan_data>([\s\S]*?)<\/loan_data>/);
-        if(lm){ try{ const p=JSON.parse(lm[1]); if(p.splits&&p.splits.length>0){ newLoan={id:uid(),description:p.description||text,timestamp:p.timestamp||Date.now(),splits:p.splits}; setLoans(p=>[newLoan,...p]); } }catch{} }
-
-        const rm=aiText.match(/<loan_repayment>([\s\S]*?)<\/loan_repayment>/);
-        if(rm){ try{ const p=JSON.parse(rm[1]); if(p.name&&p.amount>0) handleRepay(p.name,p.amount); }catch{} }
-
-        const displayText=(aiText
-          .replace(/<expense_data>[\s\S]*?<\/expense_data>/g,"")
-          .replace(/<loan_data>[\s\S]*?<\/loan_data>/g,"")
-          .replace(/<loan_repayment>[\s\S]*?<\/loan_repayment>/g,"")
-          .replace(/<transfer_request>[\s\S]*?<\/transfer_request>/g,"")
-          .trim()) + accountMsg;
-
-        setMessages(p=>[...p,{role:"assistant",content:displayText,expense:newExpense,loan:newLoan,id:uid(),provider:"free"}]);
-      } catch(err){ setMessages(p=>[...p,{role:"assistant",content:`⚠️ ${err.message}`,id:uid()}]); }
-      finally { setLoading(false); }
-      return;
-    }
-
-    // ── Other providers: require API key ──
-    const apiKey=apiKeys[selectedProvider]||"";
-    if(!apiKey){ setMessages(p=>[...p,{role:"user",content:text,id:uid()},{role:"assistant",content:`⚠️ No API key set for **${PROVIDERS[selectedProvider]?.label}**. Tap ⚙️ to add your key.`,id:uid()}]); return; }
-    setMessages(p=>[...p,{role:"user",content:text,id:uid()}]);
-    setLoading(true);
-    historyRef.current=[...historyRef.current,{role:"user",content:text}];
-    try {
-      const aiText=await callAI(
-        selectedProvider, selectedModel, apiKey,
-        historyRef.current, text, categories,
-        budget.accounts, budget.defaultAccountId,
-        expenses
-      );
+    // ── Helper to process AI response (shared between free and paid providers) ──
+    const processAIResponse = async (aiText, providerName, modelName) => {
       historyRef.current=[...historyRef.current,{role:"assistant",content:aiText}];
 
       let newExpense=null;
@@ -1407,11 +1397,10 @@ export default function ExpenseTracker() {
             reason:(p.reason||"").slice(0,100),
             type:p.type==="income"?"income":"expense",
             timestamp:ts,
-            provider:selectedProvider, model:selectedModel,
+            provider:providerName, model:modelName,
             accountId, accountName,
           };
-          setExpenses(p=>[newExpense,...p].sort((a,b)=>b.timestamp-a.timestamp));
-
+          setExpenses(prev=>[newExpense,...prev].sort((a,b)=>b.timestamp-a.timestamp));
           if (p.account_action && budget.accounts.length > 0) {
             const result = applyAccountAction(p.account_action);
             if (!result.applied && result.message) accountMsg = "\n\n" + result.message;
@@ -1422,10 +1411,47 @@ export default function ExpenseTracker() {
 
       let newLoan=null;
       const lm=aiText.match(/<loan_data>([\s\S]*?)<\/loan_data>/);
-      if(lm){ try{ const p=JSON.parse(lm[1]); if(p.splits&&p.splits.length>0){ newLoan={id:uid(),description:p.description||text,timestamp:p.timestamp||Date.now(),splits:p.splits}; setLoans(p=>[newLoan,...p]); } }catch{} }
+      if(lm){ try{
+        const p=JSON.parse(lm[1]);
+        if(p.splits&&p.splits.length>0){
+          // Filter out any "me", "you", "myself", "i" entries the AI might accidentally include
+          const filteredSplits = p.splits.filter(s => {
+            const n = (s.name||"").toLowerCase().trim();
+            return n !== "me" && n !== "you" && n !== "myself" && n !== "i" && n !== "user";
+          });
+          if(filteredSplits.length>0){
+            newLoan={id:uid(),description:p.description||text,timestamp:p.timestamp||Date.now(),splits:filteredSplits};
+            setLoans(prev=>[newLoan,...prev]);
+          }
+        }
+      }catch{} }
 
       const rm=aiText.match(/<loan_repayment>([\s\S]*?)<\/loan_repayment>/);
-      if(rm){ try{ const p=JSON.parse(rm[1]); if(p.name&&p.amount>0) handleRepay(p.name,p.amount); }catch{} }
+      if(rm){ try{
+        const p=JSON.parse(rm[1]);
+        if(p.name&&p.amount>0) {
+          // If AI also provided an expense_data for the repayment income, don't double-add
+          // The expense_data block already handles it; just update splits
+          if (!newExpense) {
+            // No expense_data emitted — call handleRepay which adds income record + credits account
+            handleRepay(p.name, p.amount);
+          } else {
+            // expense_data was emitted — just update the loan splits
+            setLoans(prev => {
+              const updated=[...prev]; let remaining=p.amount;
+              for(let i=updated.length-1;i>=0&&remaining>0;i--){
+                const loan={...updated[i],splits:[...updated[i].splits]};
+                for(let j=0;j<loan.splits.length&&remaining>0;j++){
+                  const split=loan.splits[j];
+                  if(split.name===p.name&&split.type==="owe"){ const repaid=Math.min(split.amount,remaining); loan.splits.push({name:p.name,amount:repaid,type:"repaid"}); remaining-=repaid; }
+                }
+                updated[i]=loan;
+              }
+              return updated;
+            });
+          }
+        }
+      }catch{} }
 
       const displayText=(aiText
         .replace(/<expense_data>[\s\S]*?<\/expense_data>/g,"")
@@ -1434,6 +1460,40 @@ export default function ExpenseTracker() {
         .replace(/<transfer_request>[\s\S]*?<\/transfer_request>/g,"")
         .trim()) + accountMsg;
 
+      return { displayText, newExpense, newLoan };
+    };
+
+    // ── FREE provider ──
+    if (selectedProvider === "free") {
+      setMessages(p=>[...p,{role:"user",content:text,id:uid()}]);
+      setLoading(true);
+      historyRef.current=[...historyRef.current,{role:"user",content:text}];
+      try {
+        const aiText = await callFreeAI(
+          historyRef.current, text, categories,
+          budget.accounts, budget.defaultAccountId, expenses
+        );
+        const { displayText, newExpense, newLoan } = await processAIResponse(aiText, "free", "free");
+        setMessages(p=>[...p,{role:"assistant",content:displayText,expense:newExpense,loan:newLoan,id:uid(),provider:"free"}]);
+      } catch(err){ setMessages(p=>[...p,{role:"assistant",content:`⚠️ ${err.message}`,id:uid()}]); }
+      finally { setLoading(false); }
+      return;
+    }
+
+    // ── Other providers ──
+    const apiKey=apiKeys[selectedProvider]||"";
+    if(!apiKey){ setMessages(p=>[...p,{role:"user",content:text,id:uid()},{role:"assistant",content:`⚠️ No API key set for **${PROVIDERS[selectedProvider]?.label}**. Tap ⚙️ to add your key.`,id:uid()}]); return; }
+    setMessages(p=>[...p,{role:"user",content:text,id:uid()}]);
+    setLoading(true);
+    historyRef.current=[...historyRef.current,{role:"user",content:text}];
+    try {
+      const aiText=await callAI(
+        selectedProvider, selectedModel, apiKey,
+        historyRef.current, text, categories,
+        budget.accounts, budget.defaultAccountId,
+        expenses
+      );
+      const { displayText, newExpense, newLoan } = await processAIResponse(aiText, selectedProvider, selectedModel);
       setMessages(p=>[...p,{role:"assistant",content:displayText,expense:newExpense,loan:newLoan,id:uid(),provider:selectedProvider}]);
     } catch(err){ setMessages(p=>[...p,{role:"assistant",content:`⚠️ ${err.message}`,id:uid()}]); }
     finally { setLoading(false); }
@@ -1506,7 +1566,6 @@ export default function ExpenseTracker() {
     ];
   }, [budget.accounts, expenses.length]);
 
-  // ── Check if free provider is configured ──────────────────────────────────
   const freeConfigured = FREE_GROQ_KEYS.some(k => k && !k.startsWith("gsk_your_"));
 
   return (
@@ -1603,27 +1662,12 @@ export default function ExpenseTracker() {
                   ))}
                 </div>
 
-                {/* ── FREE provider info box — no API key needed ── */}
                 {selectedProvider === "free" ? (
                   <div className="et-free-info-box">
                     <div className="et-free-info-header">
                       <span className="et-free-info-icon">✦</span>
                       <span className="et-free-info-title">Free AI — No API Key Needed!</span>
                     </div>
-                    
-                    {/* <div className="et-free-slots">
-                      {FREE_ROTATION.map((slot, i) => {
-                        const configured = slot.key && !slot.key.startsWith("gsk_your_");
-                        const modelIdx = FREE_GROQ_MODELS.indexOf(slot.model) + 1;
-                        const keyIdx   = Math.floor(i / FREE_GROQ_MODELS.length) + 1;
-                        return (
-                          <div key={i} className={`et-free-slot ${configured ? "et-free-slot--ok" : "et-free-slot--empty"}`}>
-                            <span>{configured ? "✓" : "○"}</span>
-                            <span>Slot {i+1}: Key {keyIdx} × Model {modelIdx}</span>
-                          </div>
-                        );
-                      })}
-                    </div> */}
                     {!freeConfigured && (
                       <div className="et-free-warn">
                         ⚠️ Free keys not yet configured in <code>FREE_GROQ_KEYS</code>. Edit the file to add your Groq keys.
@@ -1859,7 +1903,7 @@ function MarkdownLite({ content }) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// ── CSS
+// ── CSS (unchanged from original)
 // ══════════════════════════════════════════════════════════════════════════════
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
