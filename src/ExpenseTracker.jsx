@@ -2,6 +2,7 @@
 // Route: <Route path="/expenses" element={<ExpenseTracker />} />
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import GroupSplits from "./GroupSplits";
 
 // ── Storage Keys ───────────────────────────────────────────────────────────────
 const STORAGE_KEY     = "qnaai_expenses_v3";
@@ -487,10 +488,16 @@ try {
           username.trim().toLowerCase(),
           password,
           expenses,
-          budget,                      // ← pass budget
+          budget,
         );
         clearCountdown();
-        onSuccess({ type: "save", message: r.message, count: r.saved });
+        onSuccess({ 
+          type: "save", 
+          message: r.message, 
+          count: r.saved,
+          username: username.trim().toLowerCase(),  // ← NEW
+          password,                                  // ← NEW
+        });
       } else {
         const r = await apiSyncExpenses(
           username.trim().toLowerCase(),
@@ -501,8 +508,10 @@ try {
           type: "sync",
           expenses: r.expenses,
           count: r.count,
-          budget: r.budget,            // ← pass budget back
+          budget: r.budget,
           has_budget: r.has_budget,
+          username: username.trim().toLowerCase(),  // ← NEW
+          password,                                  // ← NEW
         });
       }
     } catch (e) {
@@ -1281,10 +1290,16 @@ function CategoryBreakdown({ expenses, catIcons, catColors }) {
 // ── Loans / Splits Tab
 // ══════════════════════════════════════════════════════════════════════════════
 function LoansTab({ loans, onRepay, onDeleteLoan }) {
-  const [deleteCfm,  setDeleteCfm]  = useState(null);
-  const [repayModal, setRepayModal] = useState(null);
-  const [repayAmt,   setRepayAmt]   = useState("");
-  const [repayErr,   setRepayErr]   = useState("");
+  // const [deleteCfm,  setDeleteCfm]  = useState(null);
+  // const [repayModal, setRepayModal] = useState(null);
+  // const [repayAmt,   setRepayAmt]   = useState("");
+  // const [repayErr,   setRepayErr]   = useState("");
+
+  const [deleteCfm,    setDeleteCfm]    = useState(null);
+  const [repayModal,   setRepayModal]   = useState(null);
+  const [repayAmt,     setRepayAmt]     = useState("");
+  const [repayErr,     setRepayErr]     = useState("");
+  const [settleAllCfm, setSettleAllCfm] = useState(null);
 
   const personMap = useMemo(()=>{ const map={}; for(const loan of loans){ for(const split of loan.splits){ if(!map[split.name]) map[split.name]={owed:0,paid:0,history:[]}; if(split.type==="owe") map[split.name].owed+=split.amount; if(split.type==="repaid") map[split.name].paid+=split.amount; map[split.name].history.push({...split,description:loan.description,timestamp:loan.timestamp}); } } return Object.entries(map).sort((a,b)=>(b[1].owed-b[1].paid)-(a[1].owed-a[1].paid)); },[loans]);
   const totalOwed = personMap.reduce((s,[,v])=>s+Math.max(0,v.owed-v.paid),0);
@@ -1303,10 +1318,15 @@ function LoansTab({ loans, onRepay, onDeleteLoan }) {
                 <div className="et-loan-card-top">
                   <div className="et-loan-avatar" style={{background:isPaid?"#22c55e22":"#f59e0b22",borderColor:isPaid?"#22c55e44":"#f59e0b44",color:isPaid?"#22c55e":"#f59e0b"}}>{name[0].toUpperCase()}</div>
                   <div className="et-loan-info"><span className="et-loan-name">{name}</span><span className="et-loan-meta">Lent: {fmt(data.owed)} · Paid: {fmt(data.paid)}</span></div>
-                  <div className="et-loan-right">
-                    <span className="et-loan-due" style={{color:isPaid?"#22c55e":"#f59e0b"}}>{isPaid?"✓ Cleared":fmt(due)+" due"}</span>
-                    {!isPaid&&<button className="et-loan-repay-btn" onClick={()=>{setRepayModal({name,maxAmt:due});setRepayAmt("");setRepayErr("");}}>Mark Paid</button>}
-                  </div>
+                    <div className="et-loan-right">
+                      <span className="et-loan-due" style={{color:isPaid?"#22c55e":"#f59e0b"}}>{isPaid?"✓ Cleared":fmt(due)+" due"}</span>
+                      {!isPaid && (
+                        <div style={{display:"flex",gap:5,flexWrap:"wrap",justifyContent:"flex-end"}}>
+                          <button className="et-loan-repay-btn" onClick={()=>{setRepayModal({name,maxAmt:due});setRepayAmt("");setRepayErr("");}}>Mark Paid</button>
+                          <button className="et-loan-settle-all-btn" onClick={()=>setSettleAllCfm({name,amount:due})}>✓ Settle All</button>
+                        </div>
+                      )}
+                    </div>
                 </div>
                 <div className="et-loan-history">
                   {data.history.slice().sort((a,b)=>b.timestamp-a.timestamp).map((h,i)=>(
@@ -1336,6 +1356,26 @@ function LoansTab({ loans, onRepay, onDeleteLoan }) {
               </div>
             ))}
           </div>
+          {settleAllCfm && (
+            <div className="et-modal-overlay" onClick={() => setSettleAllCfm(null)}>
+              <div className="et-modal" onClick={e => e.stopPropagation()}>
+                <div className="et-modal-icon">💰</div>
+                <h3>Settle All for {settleAllCfm.name}?</h3>
+                <p>Mark <strong>{fmt(settleAllCfm.amount)}</strong> as fully paid by <strong>{settleAllCfm.name}</strong>. This will be added to your Records as income and credited to your default account.</p>
+                <div className="et-modal-actions">
+                  <button className="et-modal-cancel" onClick={() => setSettleAllCfm(null)}>Cancel</button>
+                  <button
+                    className="et-modal-confirm"
+                    style={{ background: "linear-gradient(135deg,#22c55e,#16a34a)" }}
+                    onClick={() => {
+                      onRepay(settleAllCfm.name, settleAllCfm.amount);
+                      setSettleAllCfm(null);
+                    }}
+                  >✓ Settle All {fmt(settleAllCfm.amount)}</button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
       {repayModal&&(
@@ -1380,6 +1420,14 @@ export default function ExpenseTracker() {
     return { accounts:[], months:{}, defaultAccountId: null };
   });
 
+  const [cloudCredentials, setCloudCredentials] = useState(() => {
+  try {
+    return JSON.parse(localStorage.getItem("qnaai_cloud_creds") || "null") || { username: "", password: "" };
+  } catch {
+    return { username: "", password: "" };
+  }
+});
+
   const [selectedProvider, setSelectedProvider] = useState("free");
   const [selectedModel,    setSelectedModel]    = useState(CLOUD_MODELS.free[0].id);
   const [apiKeys, setApiKeys] = useState(()=>{ try{return JSON.parse(localStorage.getItem(API_KEYS_KEY)||"{}");}catch{return {};} });
@@ -1411,6 +1459,12 @@ export default function ExpenseTracker() {
   useEffect(()=>{ localStorage.setItem(BUDGET_KEY, JSON.stringify(budget)); }, [budget]);
   useEffect(()=>{ messagesEnd.current?.scrollIntoView({behavior:"smooth"}); }, [messages]);
   useEffect(()=>{ if(textareaRef.current){textareaRef.current.style.height="auto";textareaRef.current.style.height=textareaRef.current.scrollHeight+"px";} }, [input]);
+
+  useEffect(() => {
+  if (cloudCredentials.username) {
+    localStorage.setItem("qnaai_cloud_creds", JSON.stringify(cloudCredentials));
+  }
+}, [cloudCredentials]);
 
   const showToast = useCallback((message, type="success") => { setToast({message,type,id:uid()}); }, []);
 
@@ -1504,14 +1558,11 @@ const handleCloudSuccess = useCallback((result) => {
   if (result.type === "save") {
     showToast(`☁️ ${result.message}`, "success");
   } else if (result.type === "sync") {
-    // Merge expenses
     setExpenses(prev => {
       const m = Object.fromEntries(prev.map(e => [e.id, e]));
       for (const e of result.expenses) m[e.id] = e;
       return Object.values(m).sort((a, b) => b.timestamp - a.timestamp);
     });
-
-    // Restore budget/accounts if present
     if (result.has_budget && result.budget) {
       setBudget(result.budget);
       const accCount = result.budget?.accounts?.length || 0;
@@ -1522,6 +1573,10 @@ const handleCloudSuccess = useCallback((result) => {
     } else {
       showToast(`🔄 Synced ${result.count} expenses from cloud.`, "success");
     }
+  }
+  // ← NEW: capture credentials for GroupSplits
+  if (result.username && result.password) {
+    setCloudCredentials({ username: result.username, password: result.password });
   }
 }, [showToast, setBudget]);
   const handleProviderChange = useCallback((prov) => {
@@ -1738,6 +1793,39 @@ const handleCloudSuccess = useCallback((result) => {
 
       return { displayText, newExpense, newLoan };
     };
+
+    // ── Group expense detection ──────────────────────────────────────────────
+      // Detect "add X in [groupname] group" or "X for [groupname] group"
+      const detectGroupExpenseIntent = (text) => {
+        const lower = text.toLowerCase();
+        const patterns = [
+          /in\s+(.+?)\s+group/i,
+          /for\s+(.+?)\s+group/i,
+          /(.+?)\s+group\s+expense/i,
+          /add.*?to\s+(.+?)\s+group/i,
+        ];
+        for (const pat of patterns) {
+          const m = lower.match(pat);
+          if (m) return m[1].trim();
+        }
+        return null;
+      };
+
+      const groupNameMentioned = detectGroupExpenseIntent(text);
+      if (groupNameMentioned && cloudCredentials.username) {
+        setMessages(p => [...p,
+          { role: "user", content: text, id: uid() },
+          { role: "assistant", content: `👥 Looks like you want to add an expense to a group! Switch to the **👥 Groups** tab to manage group expenses and splits.\n\n💡 **Tip:** In the Groups tab you can add expenses directly — they'll split between members and also appear in your Records.`, id: uid() }
+        ]);
+        return;
+      }
+      if (groupNameMentioned && !cloudCredentials.username) {
+        setMessages(p => [...p,
+          { role: "user", content: text, id: uid() },
+          { role: "assistant", content: `👥 To use Group Splits, first **☁️ Save** or **🔄 Sync** your expenses to cloud (top-right buttons). Your username will become your group identity.\n\nThen go to the **👥 Groups** tab!`, id: uid() }
+        ]);
+        return;
+      }
 
     // ── FREE provider ──
     if (selectedProvider === "free") {
@@ -1970,11 +2058,12 @@ const handleCloudSuccess = useCallback((result) => {
 
           {/* Tabs */}
           <div className="et-tabs">
-            {[["chat","💬","Chat"],["table","📊","Records"],["catbreak","🎯","By Cat"],["accounts","💳","Accounts"],["compare","📈","Compare"],["loans","🤝","Splits"]].map(([t,ic,l])=>(
+            {[["chat","💬","Chat"],["table","📊","Records"],["catbreak","🎯","By Cat"],["accounts","💳","Accounts"],["compare","📈","Compare"],["loans","🤝","Splits"],["groups","👥","Groups"]].map(([t,ic,l])=>(
               <button key={t} className={`et-tab ${tab===t?"et-tab--active":""}`} onClick={()=>{setTab(t);setSettingsOpen(false);}}>
                 <span>{ic}</span><span className="et-tab-label">{l}</span>
                 {t==="loans"&&totalLoansOwed>0&&<span className="et-tab-badge">{loans.length}</span>}
                 {t==="accounts"&&budget.accounts.length>0&&<span className="et-tab-badge" style={{background:"#3b82f6"}}>{budget.accounts.length}</span>}
+                {t==="groups"&&cloudCredentials.username&&<span className="et-tab-badge" style={{background:"#22c55e"}}>✓</span>}
               </button>
             ))}
           </div>
@@ -2056,6 +2145,42 @@ const handleCloudSuccess = useCallback((result) => {
             )}
 
             {tab==="loans"&&<LoansTab loans={loans} onRepay={handleRepay} onDeleteLoan={handleDeleteLoan}/>}
+
+          {/* ── GROUP SPLITS ── */}
+          {tab==="groups"&&(
+            <GroupSplits
+              credentials={cloudCredentials}
+              onSignIn={(creds) => setCloudCredentials(creds)}
+              onRecordTransaction={({ amount, category, description, reason, type, accountId, accountName }) => {
+                const newEntry = {
+                  id: uid(),
+                  amount,
+                  category: DEFAULT_CATEGORIES.includes(category) ? category : "Other",
+                  description: description.slice(0, 80),
+                  reason: (reason || "").slice(0, 100),
+                  type,
+                  timestamp: Date.now(),
+                  provider: "group-split",
+                  model: "group",
+                  accountId: accountId || null,
+                  accountName: accountName || null,
+                };
+                setExpenses(prev => [newEntry, ...prev].sort((a, b) => b.timestamp - a.timestamp));
+                // Also deduct from account if expense
+                if (type === "expense" && accountId && budget.accounts.length > 0) {
+                  applyAccountAction({
+                    accountId,
+                    accountName,
+                    delta: -amount,
+                    account_not_found: false,
+                    account_type_missing: "",
+                  });
+                }
+              }}
+              budget={budget}
+              showToast={showToast}
+            />
+          )}
 
           </div>
         </main>
@@ -2230,6 +2355,11 @@ html,body,#root{height:100%;overflow:hidden;}
 .et-topbar-cloud-btn:hover:not(:disabled){background:rgba(255,255,255,0.06);}.et-topbar-cloud-btn:disabled{opacity:0.3;cursor:not-allowed;}
 .et-topbar-cloud-btn--save{border-color:rgba(245,158,11,0.3);}.et-topbar-cloud-btn--sync{border-color:rgba(34,197,94,0.3);}
 .et-share-btn-sm{background:linear-gradient(135deg,#f59e0b,#ef4444);border:none;border-radius:8px;padding:6px 10px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;transition:all 0.15s;}.et-share-btn-sm:disabled{opacity:0.35;cursor:not-allowed;}
+
+/* Group Splits tab container */
+.et-tab-content > div.gs-root { height: 100%; }
+
+.et-loan-settle-all-btn{padding:4px 10px;border-radius:8px;border:1px solid rgba(99,102,241,0.3);background:rgba(99,102,241,0.1);color:#818cf8;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;}.et-loan-settle-all-btn:hover{background:rgba(99,102,241,0.22);transform:translateY(-1px);}
 
 /* ── Countdown ── */
 .et-countdown-wrap{margin:10px 0;display:flex;flex-direction:column;gap:7px;}
