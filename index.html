@@ -2,65 +2,27 @@
 <html lang="en-IN">
   <head>
     <meta charset="UTF-8" />
-
-    <!-- ── PWA: Viewport & Theme ── -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="theme-color" content="#f59e0b" />
-    <meta name="background-color" content="#080810" />
-
-    <!-- ── PWA: Manifest ── -->
-    <link rel="manifest" href="/manifest.json" /> 
-    <!-- <link rel="manifest" href="/site.webmanifest" />
-    <link rel="shortcut icon" href="/icons/icon-192x192.png" /> -->
-
-    <!-- ── Favicon ── -->
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/icons/icon-192x192.png" />
-    <link rel="apple-touch-icon" sizes="152x152" href="/icons/icon-152x152.png" />
-    <link rel="apple-touch-icon" sizes="144x144" href="/icons/icon-144x144.png" />
-
-    <!-- ── iOS PWA: Standalone mode ── -->
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="icon" type="image/svg+xml" href="/icons.svg" />
+    <link rel="apple-touch-icon" href="/icon-192x192.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Expense AI" />
-
-    <!-- ── Android / Chrome PWA ── -->
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="application-name" content="Expense AI" />
-
-    <!-- ── SEO / Social ── -->
-    <meta name="description" content="AI-powered expense tracker for India. Track expenses & income by chatting. Multi-model AI support." />
-    <meta name="keywords" content="expense tracker, India, AI, rupees, budget, finance" />
-
-    <!-- ── Prevent phone number auto-detection ── -->
+    <meta name="description" content="AI-powered expense tracker for India." />
     <meta name="format-detection" content="telephone=no" />
-
-    <!-- ── Safe area for notched phones ── -->
     <style>
-      body {
-        margin: 0;
-        padding: 0;
-        /* Respect iOS notch / Android cutout */
-        padding-top: env(safe-area-inset-top);
-        padding-bottom: env(safe-area-inset-bottom);
-        padding-left: env(safe-area-inset-left);
-        padding-right: env(safe-area-inset-right);
-        background: #080810;
-        overflow: hidden;
-      }
-      #root {
-        height: 100dvh;
-        overflow: hidden;
-      }
+      body { margin:0; padding:0; padding-top:env(safe-area-inset-top); padding-bottom:env(safe-area-inset-bottom); padding-left:env(safe-area-inset-left); padding-right:env(safe-area-inset-right); background:#080810; overflow:hidden; }
+      #root { height:100dvh; overflow:hidden; }
     </style>
-
     <title>QNA AI</title>
   </head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.jsx"></script>
-
-    <!-- ── PWA: Service Worker registration ── -->
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {

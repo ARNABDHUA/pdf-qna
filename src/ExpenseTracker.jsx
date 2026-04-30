@@ -360,10 +360,40 @@ function encodeShare(expenses) { try { return `${window.location.origin}${window
 function decodeShare(search)   { try { const p=new URLSearchParams(search).get("share"); return p?JSON.parse(decodeURIComponent(escape(atob(p)))):null; } catch { return null; } }
 
 // ── Cloud API helpers ──────────────────────────────────────────────────────────
-async function apiCheckUser(u) { const r=await fetch(`${API_BASE}/expenses/check-user`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u})}); if(!r.ok) throw new Error("Server error"); return r.json(); }
-async function apiSaveExpenses(u,pw,ex) { const r=await fetch(`${API_BASE}/expenses/save`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:pw,expenses:ex})}); const d=await r.json(); if(!r.ok) throw new Error(d.detail||"Save failed"); return d; }
-async function apiSyncExpenses(u,pw) { const r=await fetch(`${API_BASE}/expenses/sync`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:pw})}); const d=await r.json(); if(!r.ok) throw new Error(d.detail||"Sync failed"); return d; }
+// async function apiCheckUser(u) { const r=await fetch(`${API_BASE}/expenses/check-user`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u})}); if(!r.ok) throw new Error("Server error"); return r.json(); }
+// async function apiSaveExpenses(u,pw,ex) { const r=await fetch(`${API_BASE}/expenses/save`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:pw,expenses:ex})}); const d=await r.json(); if(!r.ok) throw new Error(d.detail||"Save failed"); return d; }
+// async function apiSyncExpenses(u,pw) { const r=await fetch(`${API_BASE}/expenses/sync`,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({username:u,password:pw})}); const d=await r.json(); if(!r.ok) throw new Error(d.detail||"Sync failed"); return d; }
 
+async function apiCheckUser(u) {
+  const r = await fetch(`${API_BASE}/expenses/check-user`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: u }),
+  });
+  if (!r.ok) throw new Error("Server error");
+  return r.json();
+}
+async function apiSaveExpenses(u, pw, ex, budget) {          // ← budget added
+  const r = await fetch(`${API_BASE}/expenses/save`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: u, password: pw, expenses: ex, budget }),
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || "Save failed");
+  return d;
+}
+
+async function apiSyncExpenses(u, pw) {
+  const r = await fetch(`${API_BASE}/expenses/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username: u, password: pw }),
+  });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || "Sync failed");
+  return d;                                                   // now includes .budget
+}
 // ══════════════════════════════════════════════════════════════════════════════
 // ── Toast
 // ══════════════════════════════════════════════════════════════════════════════
@@ -381,44 +411,265 @@ function Toast({ message, type, onDone }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // ── Cloud Modal
 // ══════════════════════════════════════════════════════════════════════════════
-function CloudModal({ mode, expenses, onClose, onSuccess }) {
-  const [step,setStep]=useState("username");
-  const [username,setUsername]=useState("");
-  const [password,setPassword]=useState("");
-  const [userExists,setUserExists]=useState(null);
-  const [loading,setLoading]=useState(false);
-  const [error,setError]=useState("");
-  const [showPw,setShowPw]=useState(false);
-  const inputRef=useRef(null);
-  useEffect(()=>{ setTimeout(()=>inputRef.current?.focus(),80); },[step]);
-  const isSave=mode==="save", accent=isSave?"#f59e0b":"#22c55e";
-  const hk=(e,fn)=>{ if(e.key==="Enter") fn(); };
-  const handleUsernameNext=async()=>{ const u=username.trim().toLowerCase(); if(u.length<2){setError("Min 2 chars.");return;} setError("");setLoading(true); try{ const{exists}=await apiCheckUser(u); setUserExists(exists);setStep("password"); }catch(e){setError(e.message);}finally{setLoading(false);} };
-  const handleSubmit=async()=>{ if(password.length<4){setError("Min 4 chars.");return;} setError("");setLoading(true); try{ if(isSave){const r=await apiSaveExpenses(username.trim().toLowerCase(),password,expenses);onSuccess({type:"save",message:r.message,count:r.saved});}else{const r=await apiSyncExpenses(username.trim().toLowerCase(),password);onSuccess({type:"sync",expenses:r.expenses,count:r.count});} }catch(e){setError(e.message);setLoading(false);} };
+function CloudModal({ mode, expenses, budget, onClose, onSuccess }) {
+  const [step, setStep]           = useState("username");
+  const [username, setUsername]   = useState("");
+  const [password, setPassword]   = useState("");
+  const [userExists, setUserExists] = useState(null);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState("");
+  const [showPw, setShowPw]       = useState(false);
+
+  // ── 50-sec countdown state ──
+  const [countdown, setCountdown]   = useState(null);   // null = not started
+  const countdownRef                = useRef(null);
+
+  const inputRef = useRef(null);
+  useEffect(() => { setTimeout(() => inputRef.current?.focus(), 80); }, [step]);
+
+  // Start / clear countdown
+  const startCountdown = (onDone) => {
+    setCountdown(50);
+    let remaining = 50;
+    countdownRef.current = setInterval(() => {
+      remaining -= 1;
+      setCountdown(remaining);
+      if (remaining <= 0) {
+        clearInterval(countdownRef.current);
+        countdownRef.current = null;
+        // countdown finished — don't close, the fetch is still running
+      }
+    }, 1000);
+  };
+
+  const clearCountdown = () => {
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
+    setCountdown(null);
+  };
+
+  // Cleanup on unmount
+  useEffect(() => () => clearCountdown(), []);
+
+  const isSave   = mode === "save";
+  const accent   = isSave ? "#f59e0b" : "#22c55e";
+  const hk       = (e, fn) => { if (e.key === "Enter") fn(); };
+
+  const handleUsernameNext = async () => {
+    const u = username.trim().toLowerCase();
+    if (u.length < 2) { setError("Min 2 chars."); return; }
+    setError(""); setLoading(true);
+startCountdown();  // ← ADD
+try {
+  const { exists } = await apiCheckUser(u);
+  setUserExists(exists);
+  setStep("password");
+} catch (e) {
+  setError(e.message);
+} finally {
+  clearCountdown();  // ← ADD
+  setLoading(false);
+}
+  };
+
+  const handleSubmit = async () => {
+    if (password.length < 4) { setError("Min 4 chars."); return; }
+    setError(""); setLoading(true);
+
+    // Start 50-sec countdown immediately
+    startCountdown();
+
+    try {
+      if (isSave) {
+        const r = await apiSaveExpenses(
+          username.trim().toLowerCase(),
+          password,
+          expenses,
+          budget,                      // ← pass budget
+        );
+        clearCountdown();
+        onSuccess({ type: "save", message: r.message, count: r.saved });
+      } else {
+        const r = await apiSyncExpenses(
+          username.trim().toLowerCase(),
+          password,
+        );
+        clearCountdown();
+        onSuccess({
+          type: "sync",
+          expenses: r.expenses,
+          count: r.count,
+          budget: r.budget,            // ← pass budget back
+          has_budget: r.has_budget,
+        });
+      }
+    } catch (e) {
+      clearCountdown();
+      setError(e.message);
+      setLoading(false);
+    }
+  };
+
+  // Progress bar width (50 → 0 maps to 100% → 0%)
+  const progressPct = countdown !== null ? (countdown / 50) * 100 : 0;
+
   return (
     <div className="et-modal-overlay" onClick={onClose}>
-      <div className="et-modal et-cloud-modal" onClick={e=>e.stopPropagation()}>
-        <div className="et-cloud-modal-icon" style={{background:accent+"18",border:`1px solid ${accent}44`}}>{isSave?"☁️":"🔄"}</div>
-        <h3>{isSave?"Save to Cloud":"Sync from Cloud"}</h3>
-        <p className="et-cloud-modal-sub">{isSave?"Save your local expenses to MongoDB cloud.":"Load your cloud expenses to this device."}</p>
-        {step==="username"&&(<>
-          <div className="et-cloud-field"><label>Username</label><input ref={inputRef} type="text" value={username} onChange={e=>{setUsername(e.target.value);setError("");}} onKeyDown={e=>hk(e,handleUsernameNext)} placeholder="Enter your username" className="et-cloud-input" autoComplete="username"/></div>
-          {error&&<div className="et-cloud-error">⚠️ {error}</div>}
-          <div className="et-modal-actions"><button className="et-modal-cancel" onClick={onClose}>Cancel</button><button className="et-modal-confirm" style={{background:`linear-gradient(135deg,${accent},${isSave?"#ef4444":"#3b82f6"})`}} onClick={handleUsernameNext} disabled={loading||!username.trim()}>{loading?"Checking…":"Continue →"}</button></div>
-        </>)}
-        {step==="password"&&(<>
-          <div className="et-cloud-user-badge"><span className="et-cloud-avatar">{username[0]?.toUpperCase()}</span><span>{username}</span><button className="et-cloud-change-user" onClick={()=>{setStep("username");setPassword("");setError("");setUserExists(null);}}>✎</button></div>
-          {userExists===false&&<div className="et-cloud-notice" style={{borderColor:accent+"44",background:accent+"0d"}}>🆕 <strong>New account</strong> — will be created.</div>}
-          {userExists===true&&<div className="et-cloud-notice" style={{borderColor:"#3b82f644",background:"#3b82f60d"}}>👤 <strong>Welcome back!</strong> Enter your password.</div>}
-          <div className="et-cloud-field"><label>{userExists===false?"Create password":"Password"}</label>
-            <div className="et-api-input-wrap">
-              <input ref={inputRef} type={showPw?"text":"password"} value={password} onChange={e=>{setPassword(e.target.value);setError("");}} onKeyDown={e=>hk(e,handleSubmit)} placeholder={userExists===false?"Min 4 chars":"Enter password"} className="et-api-input" autoComplete={userExists===false?"new-password":"current-password"}/>
-              <button className="et-api-toggle" onClick={()=>setShowPw(s=>!s)}>{showPw?<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>:<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}</button>
+      <div className="et-modal et-cloud-modal" onClick={e => e.stopPropagation()}>
+        <div
+          className="et-cloud-modal-icon"
+          style={{ background: accent + "18", border: `1px solid ${accent}44` }}
+        >
+          {isSave ? "☁️" : "🔄"}
+        </div>
+
+        <h3>{isSave ? "Save to Cloud" : "Sync from Cloud"}</h3>
+        <p className="et-cloud-modal-sub">
+          {isSave
+            ? "Save your expenses & account data to MongoDB cloud."
+            : "Load your cloud expenses & account data to this device."}
+        </p>
+
+        {/* ── Countdown UI (shown while loading) ── */}
+        {loading && countdown !== null && (
+          <div className="et-countdown-wrap">
+            <div className="et-countdown-bar-bg">
+              <div
+                className="et-countdown-bar-fill"
+                style={{
+                  width: progressPct + "%",
+                  background: `linear-gradient(90deg, ${accent}, ${isSave ? "#ef4444" : "#3b82f6"})`,
+                  transition: "width 1s linear",
+                }}
+              />
+            </div>
+            <div className="et-countdown-row">
+              <span className="et-countdown-icon">
+                {countdown > 30 ? "🚀" : countdown > 10 ? "⏳" : "✨"}
+              </span>
+              <span className="et-countdown-text">
+                {countdown > 0
+                  ? `Server waking up… ${countdown}s`
+                  : "Almost there, please wait…"}
+              </span>
+              {countdown > 0 && (
+                <span className="et-countdown-num" style={{ color: accent }}>
+                  {countdown}
+                </span>
+              )}
             </div>
           </div>
-          {error&&<div className="et-cloud-error">⚠️ {error}</div>}
-          <div className="et-modal-actions"><button className="et-modal-cancel" onClick={onClose} disabled={loading}>Cancel</button><button className="et-modal-confirm" style={{background:loading?"#333":`linear-gradient(135deg,${accent},${isSave?"#ef4444":"#3b82f6"})`}} onClick={handleSubmit} disabled={loading||!password}>{loading?(isSave?"Saving…":"Syncing…"):(isSave?"💾 Save to Cloud":"🔄 Sync to Device")}</button></div>
-        </>)}
+        )}
+
+        {step === "username" && (
+          <>
+            <div className="et-cloud-field">
+              <label>Username</label>
+              <input
+                ref={inputRef}
+                type="text"
+                value={username}
+                onChange={e => { setUsername(e.target.value); setError(""); }}
+                onKeyDown={e => hk(e, handleUsernameNext)}
+                placeholder="Enter your username"
+                className="et-cloud-input"
+                autoComplete="username"
+              />
+            </div>
+            {error && <div className="et-cloud-error">⚠️ {error}</div>}
+            <div className="et-modal-actions">
+              <button className="et-modal-cancel" onClick={onClose}>Cancel</button>
+              <button
+                className="et-modal-confirm"
+                style={{ background: `linear-gradient(135deg,${accent},${isSave ? "#ef4444" : "#3b82f6"})` }}
+                onClick={handleUsernameNext}
+                disabled={loading || !username.trim()}
+              >
+                {loading ? "Checking…" : "Continue →"}
+              </button>
+            </div>
+          </>
+        )}
+
+        {step === "password" && (
+          <>
+            <div className="et-cloud-user-badge">
+              <span className="et-cloud-avatar">{username[0]?.toUpperCase()}</span>
+              <span>{username}</span>
+              <button
+                className="et-cloud-change-user"
+                onClick={() => { setStep("username"); setPassword(""); setError(""); setUserExists(null); clearCountdown(); }}
+              >✎</button>
+            </div>
+
+            {userExists === false && (
+              <div className="et-cloud-notice" style={{ borderColor: accent + "44", background: accent + "0d" }}>
+                🆕 <strong>New account</strong> — will be created.
+              </div>
+            )}
+            {userExists === true && (
+              <div className="et-cloud-notice" style={{ borderColor: "#3b82f644", background: "#3b82f60d" }}>
+                👤 <strong>Welcome back!</strong> Enter your password.
+              </div>
+            )}
+
+            <div className="et-cloud-field">
+              <label>{userExists === false ? "Create password" : "Password"}</label>
+              <div className="et-api-input-wrap">
+                <input
+                  ref={inputRef}
+                  type={showPw ? "text" : "password"}
+                  value={password}
+                  onChange={e => { setPassword(e.target.value); setError(""); }}
+                  onKeyDown={e => hk(e, handleSubmit)}
+                  placeholder={userExists === false ? "Min 4 chars" : "Enter password"}
+                  className="et-api-input"
+                  autoComplete={userExists === false ? "new-password" : "current-password"}
+                  disabled={loading}
+                />
+                <button className="et-api-toggle" onClick={() => setShowPw(s => !s)}>
+                  {showPw
+                    ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+                    : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>}
+                </button>
+              </div>
+            </div>
+
+            {/* Accounts/budget info strip */}
+            {isSave && budget && budget.accounts && budget.accounts.length > 0 && (
+              <div className="et-cloud-notice" style={{ borderColor: "#3b82f644", background: "#3b82f60d", fontSize: 11 }}>
+                💳 <strong>{budget.accounts.length} account{budget.accounts.length !== 1 ? "s" : ""}</strong> will also be saved
+                {" "}({budget.accounts.map(a => a.name).join(", ")}).
+              </div>
+            )}
+
+            {error && <div className="et-cloud-error">⚠️ {error}</div>}
+
+            <div className="et-modal-actions">
+              <button
+                className="et-modal-cancel"
+                onClick={onClose}
+                disabled={loading}
+              >Cancel</button>
+              <button
+                className="et-modal-confirm"
+                style={{
+                  background: loading
+                    ? "#333"
+                    : `linear-gradient(135deg,${accent},${isSave ? "#ef4444" : "#3b82f6"})`,
+                }}
+                onClick={handleSubmit}
+                disabled={loading || !password}
+              >
+                {loading
+                  ? (isSave ? "Saving…" : "Syncing…")
+                  : (isSave ? "💾 Save to Cloud" : "🔄 Sync to Device")}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -1242,12 +1493,37 @@ export default function ExpenseTracker() {
     });
   }, [budget]);
 
-  const handleCloudSuccess = useCallback((result) => {
-    setCloudModal(null);
-    if (result.type==="save") { showToast(`☁️ ${result.message}`,"success"); }
-    else if (result.type==="sync") { setExpenses(prev=>{ const m=Object.fromEntries(prev.map(e=>[e.id,e])); for(const e of result.expenses) m[e.id]=e; return Object.values(m).sort((a,b)=>b.timestamp-a.timestamp); }); showToast(`🔄 Synced ${result.count} expenses from cloud.`,"success"); }
-  }, [showToast]);
+  // const handleCloudSuccess = useCallback((result) => {
+  //   setCloudModal(null);
+  //   if (result.type==="save") { showToast(`☁️ ${result.message}`,"success"); }
+  //   else if (result.type==="sync") { setExpenses(prev=>{ const m=Object.fromEntries(prev.map(e=>[e.id,e])); for(const e of result.expenses) m[e.id]=e; return Object.values(m).sort((a,b)=>b.timestamp-a.timestamp); }); showToast(`🔄 Synced ${result.count} expenses from cloud.`,"success"); }
+  // }, [showToast]);
 
+const handleCloudSuccess = useCallback((result) => {
+  setCloudModal(null);
+  if (result.type === "save") {
+    showToast(`☁️ ${result.message}`, "success");
+  } else if (result.type === "sync") {
+    // Merge expenses
+    setExpenses(prev => {
+      const m = Object.fromEntries(prev.map(e => [e.id, e]));
+      for (const e of result.expenses) m[e.id] = e;
+      return Object.values(m).sort((a, b) => b.timestamp - a.timestamp);
+    });
+
+    // Restore budget/accounts if present
+    if (result.has_budget && result.budget) {
+      setBudget(result.budget);
+      const accCount = result.budget?.accounts?.length || 0;
+      showToast(
+        `🔄 Synced ${result.count} expenses${accCount ? ` + ${accCount} account${accCount !== 1 ? "s" : ""}` : ""} from cloud.`,
+        "success",
+      );
+    } else {
+      showToast(`🔄 Synced ${result.count} expenses from cloud.`, "success");
+    }
+  }
+}, [showToast, setBudget]);
   const handleProviderChange = useCallback((prov) => {
     setSelectedProvider(prov);
     const mods=CLOUD_MODELS[prov]||[];
@@ -1954,6 +2230,16 @@ html,body,#root{height:100%;overflow:hidden;}
 .et-topbar-cloud-btn:hover:not(:disabled){background:rgba(255,255,255,0.06);}.et-topbar-cloud-btn:disabled{opacity:0.3;cursor:not-allowed;}
 .et-topbar-cloud-btn--save{border-color:rgba(245,158,11,0.3);}.et-topbar-cloud-btn--sync{border-color:rgba(34,197,94,0.3);}
 .et-share-btn-sm{background:linear-gradient(135deg,#f59e0b,#ef4444);border:none;border-radius:8px;padding:6px 10px;color:#fff;font-size:13px;font-weight:700;cursor:pointer;transition:all 0.15s;}.et-share-btn-sm:disabled{opacity:0.35;cursor:not-allowed;}
+
+/* ── Countdown ── */
+.et-countdown-wrap{margin:10px 0;display:flex;flex-direction:column;gap:7px;}
+.et-countdown-bar-bg{height:6px;background:rgba(255,255,255,0.07);border-radius:4px;overflow:hidden;}
+.et-countdown-bar-fill{height:100%;border-radius:4px;}
+.et-countdown-row{display:flex;align-items:center;gap:7px;}
+.et-countdown-icon{font-size:16px;flex-shrink:0;}
+.et-countdown-text{flex:1;font-size:12px;color:rgba(255,255,255,0.55);}
+.et-countdown-num{font-size:20px;font-weight:800;font-family:'JetBrains Mono',monospace;min-width:28px;text-align:right;}
+
 
 /* Settings panel */
 .et-settings-panel{background:var(--bg3);border-bottom:1px solid var(--border);flex-shrink:0;animation:et-slide-down 0.2s ease;overflow-y:auto;max-height:min(50dvh,400px);position:relative;z-index:10;}
