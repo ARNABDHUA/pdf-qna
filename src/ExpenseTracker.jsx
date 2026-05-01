@@ -2167,15 +2167,15 @@ const handleCloudSuccess = useCallback((result) => {
                 };
                 setExpenses(prev => [newEntry, ...prev].sort((a, b) => b.timestamp - a.timestamp));
                 // Also deduct from account if expense
-                if (type === "expense" && accountId && budget.accounts.length > 0) {
-                  applyAccountAction({
-                    accountId,
-                    accountName,
-                    delta: -amount,
-                    account_not_found: false,
-                    account_type_missing: "",
-                  });
-                }
+               if (accountId && budget.accounts.length > 0) {
+                    applyAccountAction({
+                      accountId,
+                      accountName,
+                      delta: type === "income" ? amount : -amount,
+                      account_not_found: false,
+                      account_type_missing: "",
+                    });
+                  }
               }}
               budget={budget}
               showToast={showToast}

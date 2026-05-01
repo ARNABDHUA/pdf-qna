@@ -1,28 +1,30 @@
 // GroupSplits.jsx — Group-based split expenses for ExpenseTracker
 // Integrates with group_splits_routes.py backend
-// Features: create/join groups, add expenses, settle, real-time WS, push notifications
+// Features: create/join groups, add expenses, settle, real-time WS + polling fallback, push notifications
 // Usage: import GroupSplits from "./GroupSplits"; then add as a tab in ExpenseTracker
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 const API_BASE = "https://pdf-qna-backend.onrender.com";
-const WS_BASE  = API_BASE.replace(/^http/, "ws");
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-const fmt      = (n) => "₹" + Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
-const dateIN   = (ts) => new Date(ts).toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Asia/Kolkata" });
-const timeIN   = (ts) => new Date(ts).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata" });
-const monthKey = (ts) => { const d = new Date(ts + 5.5 * 3600000); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
-const yearKey  = (ts) => String(new Date(ts + 5.5 * 3600000).getUTCFullYear());
+const fmt        = (n) => "₹" + Number(n || 0).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+const dateIN     = (ts) => new Date(ts).toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "Asia/Kolkata" });
+const timeIN     = (ts) => new Date(ts).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true, timeZone: "Asia/Kolkata" });
+const monthKey   = (ts) => { const d = new Date(ts + 5.5 * 3600000); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
+const yearKey    = (ts) => String(new Date(ts + 5.5 * 3600000).getUTCFullYear());
 const monthLabel = (mk) => { const [y, m] = mk.split("-").map(Number); return new Date(y, m - 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" }); };
-const uid      = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
+const uid        = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
+
+// ── Dedup helper — always use this when setting groupExpenses ─────────────────
+const dedupExpenses = (arr) =>
+  Array.from(new Map((arr || []).map(e => [e.expense_id, e])).values())
+    .sort((a, b) => b.timestamp - a.timestamp);
 
 const CAT_ICONS  = { Food:"🍽️", Transport:"🚌", Shopping:"🛒", Bills:"💡", Health:"💊", Entertainment:"🎬", Education:"📚", Travel:"✈️", Rent:"🏠", Salary:"💰", Other:"📌" };
 const CAT_COLORS = { Food:"#f97316", Transport:"#0ea5e9", Shopping:"#a855f7", Bills:"#ef4444", Health:"#10b981", Entertainment:"#f59e0b", Education:"#3b82f6", Travel:"#06b6d4", Rent:"#8b5cf6", Salary:"#22c55e", Other:"#6b7280" };
 const CATEGORIES = Object.keys(CAT_ICONS);
-
-const PUSH_PUBLIC_KEY = ""; // fill in your VAPID public key if you have one
 
 // ── API helpers ────────────────────────────────────────────────────────────────
 async function apiCall(path, body) {
@@ -37,15 +39,6 @@ async function apiCall(path, body) {
 }
 
 // ── Push notification helpers ──────────────────────────────────────────────────
-function urlBase64ToUint8Array(base64String) {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const rawData = window.atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
-  return outputArray;
-}
-
 async function requestPushPermission() {
   if (!("Notification" in window) || !("serviceWorker" in navigator)) return false;
   if (Notification.permission === "granted") return true;
@@ -54,14 +47,18 @@ async function requestPushPermission() {
 }
 
 function showLocalNotification(title, body, groupId) {
-  if (Notification.permission === "granted") {
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
     const n = new Notification(title, {
       body,
-      icon: "💸",
+      icon: `${window.location.origin}/favicon.ico`,
+      badge: `${window.location.origin}/favicon.ico`,
       tag: `group-${groupId}`,
       renotify: true,
     });
     n.onclick = () => { window.focus(); n.close(); };
+  } catch (e) {
+    console.warn("Notification error:", e);
   }
 }
 
@@ -69,33 +66,36 @@ function showLocalNotification(title, body, groupId) {
 // ── Main GroupSplits Component
 // ══════════════════════════════════════════════════════════════════════════════
 export default function GroupSplits({ credentials, onRecordTransaction, budget, showToast, onSignIn }) {
-  // credentials = { username, password } — passed from parent ExpenseTracker
   const { username = "", password = "" } = credentials || {};
 
-  const [groups,        setGroups]        = useState([]);
-  const [activeGroup,   setActiveGroup]   = useState(null); // full group detail
-  const [groupExpenses, setGroupExpenses] = useState([]);
-  const [loading,       setLoading]       = useState(false);
-  const [view,          setView]          = useState("list"); // list | detail | create | join
-  const [periodView,    setPeriodView]    = useState("month"); // month | year
-  const [selectedPeriod,setSelectedPeriod] = useState("");
-  const [catFilter,     setCatFilter]     = useState("all");
-  const [compareMode,   setCompareMode]   = useState(false);
-  const [pushEnabled,   setPushEnabled]   = useState(Notification?.permission === "granted");
-  const [toast,         setToast]         = useState(null);
+  const [groups,         setGroups]         = useState([]);
+  const [activeGroup,    setActiveGroup]    = useState(null);
+  const [groupExpenses,  setGroupExpenses]  = useState([]);
+  const [loading,        setLoading]        = useState(false);
+  const [view,           setView]           = useState("list");
+  const [periodView,     setPeriodView]     = useState("month");
+  const [selectedPeriod, setSelectedPeriod] = useState("");
+  const [catFilter,      setCatFilter]      = useState("all");
+  const [compareMode,    setCompareMode]    = useState(false);
+  const [pushEnabled,    setPushEnabled]    = useState(Notification?.permission === "granted");
+  const [toast,          setToast]          = useState(null);
 
   // Modals
-  const [createModal,  setCreateModal]  = useState(false);
-  const [joinModal,    setJoinModal]    = useState(false);
-  const [addExpModal,  setAddExpModal]  = useState(false);
-  const [settleModal,  setSettleModal]  = useState(null);
-  const [inviteModal,  setInviteModal]  = useState(false);
+  const [createModal,    setCreateModal]    = useState(false);
+  const [joinModal,      setJoinModal]      = useState(false);
+  const [addExpModal,    setAddExpModal]    = useState(false);
+  const [inviteModal,    setInviteModal]    = useState(false);
   const [addMemberModal, setAddMemberModal] = useState(false);
-  const [removeModal,     setRemoveModal]     = useState(null);
-  const [settleAllModal,  setSettleAllModal]  = useState(null);
+  const [removeModal,    setRemoveModal]    = useState(null);
+  const [settleAllModal, setSettleAllModal] = useState(null);
 
-  // WebSocket refs per group
-  const wsRef = useRef({});
+  // Refs
+  const wsRef              = useRef({});
+  const wsRetry            = useRef({});
+  const handleWsMessageRef = useRef(null);
+  const loadGroupDetailRef = useRef(null);
+  const pollRef            = useRef(null);
+  const lastExpCountRef    = useRef(0);
 
   const isAuthed = username && password;
 
@@ -104,7 +104,7 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     else setToast({ msg, type, id: uid() });
   }, [showToast]);
 
-  // ── Load groups on mount ───────────────────────────────────────────────────
+  // ── Load groups ────────────────────────────────────────────────────────────
   const loadGroups = useCallback(async () => {
     if (!isAuthed) return;
     setLoading(true);
@@ -120,52 +120,14 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
 
   useEffect(() => { loadGroups(); }, [loadGroups]);
 
-  // ── WebSocket connection for active group ──────────────────────────────────
-  useEffect(() => {
-    if (!activeGroup || !isAuthed) return;
-    const gid = activeGroup.group_id;
-    if (wsRef.current[gid]) return; // already connected
-
-    const wsUrl = `${WS_BASE}/groups/ws/${gid}/${encodeURIComponent(username)}`;
-    let ws;
-    try {
-      ws = new WebSocket(wsUrl);
-    } catch { return; }
-
-    ws.onopen = () => {
-      wsRef.current[gid] = ws;
-      // Ping keepalive
-      const ping = setInterval(() => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "ping" }));
-      }, 25000);
-      ws._ping = ping;
-    };
-
-    ws.onmessage = (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        handleWsMessage(msg, gid);
-      } catch {}
-    };
-
-    ws.onclose = () => {
-      delete wsRef.current[gid];
-      clearInterval(ws._ping);
-    };
-
-    return () => {
-      ws.close();
-      clearInterval(ws._ping);
-      delete wsRef.current[gid];
-    };
-  }, [activeGroup?.group_id, isAuthed, username]);
-
+  // ── handleWsMessage ────────────────────────────────────────────────────────
   const handleWsMessage = useCallback((msg, gid) => {
     if (msg.type === "new_expense") {
-      setGroupExpenses(prev => {
-        if (prev.find(e => e.expense_id === msg.expense.expense_id)) return prev;
-        return [msg.expense, ...prev];
-      });
+      setGroupExpenses(prev =>
+        prev.some(e => e.expense_id === msg.expense.expense_id)
+          ? prev
+          : dedupExpenses([msg.expense, ...prev])
+      );
       if (msg.expense.paid_by !== username) {
         showLocalNotification(
           `💸 New expense in ${msg.group_name || "group"}`,
@@ -192,13 +154,16 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     }
     if (msg.type === "member_joined" || msg.type === "member_added") {
       localToast(`👋 ${msg.username} joined the group!`, "success");
-      loadGroupDetail(gid);
+      loadGroupDetailRef.current?.(gid);
     }
     if (msg.type === "member_removed" || msg.type === "member_left") {
       localToast(`👋 ${msg.username} left the group.`, "info");
-      loadGroupDetail(gid);
+      loadGroupDetailRef.current?.(gid);
     }
   }, [username, localToast]);
+
+  // Keep refs fresh
+  useEffect(() => { handleWsMessageRef.current = handleWsMessage; }, [handleWsMessage]);
 
   // ── Load group detail ──────────────────────────────────────────────────────
   const loadGroupDetail = useCallback(async (groupId) => {
@@ -207,9 +172,8 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     try {
       const d = await apiCall(`/${groupId}/detail`, { username, password });
       setActiveGroup(d.group);
-      setGroupExpenses((d.expenses || []).sort((a, b) => b.timestamp - a.timestamp));
+      setGroupExpenses(dedupExpenses(d.expenses || []));
       setView("detail");
-      // Set default period to current month
       const ist = new Date(Date.now() + 5.5 * 3600000);
       const mk = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, "0")}`;
       setSelectedPeriod(mk);
@@ -220,7 +184,133 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     }
   }, [username, password, isAuthed, localToast]);
 
-  // ── Computed: periods and filtered expenses ────────────────────────────────
+  // Sync loadGroupDetail ref AFTER it is defined
+  useEffect(() => { loadGroupDetailRef.current = loadGroupDetail; }, [loadGroupDetail]);
+
+  // ── WebSocket + polling fallback ───────────────────────────────────────────
+  useEffect(() => {
+    if (!activeGroup || !isAuthed) return;
+    const gid = activeGroup.group_id;
+
+    let destroyed    = false;
+    let pingInterval = null;
+    let retryTimeout = null;
+    let wsConnected  = false;
+
+    // Polling fallback
+    const startPolling = () => {
+      if (pollRef.current) return;
+      pollRef.current = setInterval(async () => {
+        if (wsConnected || destroyed) {
+          clearInterval(pollRef.current);
+          pollRef.current = null;
+          return;
+        }
+        try {
+          const d = await apiCall(`/${gid}/detail`, { username, password });
+          const incoming = dedupExpenses(d.expenses || []);
+          if (incoming.length !== lastExpCountRef.current) {
+            lastExpCountRef.current = incoming.length;
+            setGroupExpenses(incoming);
+          }
+        } catch {}
+      }, 8000);
+    };
+
+    const stopPolling = () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
+    };
+
+    // Setup WS handlers
+    const setupWs = (ws) => {
+      const openTimeout = setTimeout(() => {
+        if (!wsConnected) startPolling();
+      }, 8000);
+
+      ws.onopen = () => {
+        clearTimeout(openTimeout);
+        if (destroyed) { ws.close(); return; }
+        wsConnected = true;
+        wsRef.current[gid] = ws;
+        wsRetry.current[gid] = 0;
+        clearTimeout(retryTimeout);
+        stopPolling();
+
+        pingInterval = setInterval(() => {
+          if (ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: "ping" }));
+          }
+        }, 25000);
+      };
+
+      ws.onmessage = (e) => {
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === "pong") return;
+          handleWsMessageRef.current?.(msg, gid);
+        } catch {}
+      };
+
+      ws.onerror = () => { clearTimeout(openTimeout); };
+
+      ws.onclose = () => {
+        clearTimeout(openTimeout);
+        clearInterval(pingInterval);
+        pingInterval = null;
+        wsConnected  = false;
+        delete wsRef.current[gid];
+        if (!destroyed) {
+          startPolling();
+          scheduleRetry();
+        }
+      };
+    };
+
+    const connect = () => {
+      if (destroyed) return;
+      const wsUrl = `${API_BASE.replace(/^https/, "wss").replace(/^http/, "ws")}/groups/ws/${gid}/${encodeURIComponent(username)}`;
+
+      // Ping health first to avoid WS attempt on sleeping server
+      fetch(`${API_BASE}/health`, { method: "GET" })
+        .then(() => {
+          if (destroyed) return;
+          let ws;
+          try { ws = new WebSocket(wsUrl); }
+          catch { startPolling(); scheduleRetry(); return; }
+          setupWs(ws);
+        })
+        .catch(() => {
+          startPolling();
+          scheduleRetry();
+        });
+    };
+
+    const scheduleRetry = () => {
+      if (destroyed) return;
+      const attempt = (wsRetry.current[gid] || 0) + 1;
+      wsRetry.current[gid] = attempt;
+      const delay = Math.min(2000 * Math.pow(2, attempt - 1), 30000);
+      retryTimeout = setTimeout(connect, delay);
+    };
+
+    lastExpCountRef.current = groupExpenses.length;
+    connect();
+
+    return () => {
+      destroyed = true;
+      clearInterval(pingInterval);
+      clearTimeout(retryTimeout);
+      stopPolling();
+      const ws = wsRef.current[gid];
+      if (ws) { ws.close(); delete wsRef.current[gid]; }
+      delete wsRetry.current[gid];
+    };
+  }, [activeGroup?.group_id, isAuthed, username]);
+
+  // ── Computed ───────────────────────────────────────────────────────────────
   const allPeriods = useMemo(() => {
     const keys = new Set();
     for (const e of groupExpenses) {
@@ -244,7 +334,6 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     });
   }, [groupExpenses, periodView, selectedPeriod, catFilter]);
 
-  // ── Balance summary ────────────────────────────────────────────────────────
   const balanceSummary = useMemo(() => {
     if (!activeGroup) return { youOwe: 0, othersOwe: 0, settledTotal: 0 };
     let youOwe = 0, othersOwe = 0, settledTotal = 0;
@@ -258,21 +347,21 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     return { youOwe: Math.round(youOwe * 100) / 100, othersOwe: Math.round(othersOwe * 100) / 100, settledTotal };
   }, [groupExpenses, activeGroup, username]);
 
-  // Per-person owe map
   const personOwes = useMemo(() => {
     if (!activeGroup) return {};
     const map = {};
     for (const e of groupExpenses) {
       for (const s of e.splits || []) {
         if (!map[s.username]) map[s.username] = { owes: 0, paid: 0 };
-        if (!s.paid) map[s.username].owes += s.share;
-        else map[s.username].paid += s.share;
+        if (s.username !== e.paid_by) {
+          if (s.paid) map[s.username].paid += s.share;
+          else map[s.username].owes += s.share;
+        }
       }
     }
     return map;
   }, [groupExpenses, activeGroup]);
 
-  // Compare periods
   const comparePeriods = useMemo(() => {
     if (!compareMode || allPeriods.length < 2) return null;
     const [cur, prev] = allPeriods;
@@ -283,15 +372,13 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
       });
       const total = exps.reduce((s, e) => s + e.amount, 0);
       const catMap = {};
-      for (const e of exps) {
-        catMap[e.category] = (catMap[e.category] || 0) + e.amount;
-      }
+      for (const e of exps) catMap[e.category] = (catMap[e.category] || 0) + e.amount;
       return { total, count: exps.length, catMap };
     };
     return { cur: { key: cur, ...forPeriod(cur) }, prev: { key: prev, ...forPeriod(prev) } };
   }, [compareMode, allPeriods, groupExpenses, periodView]);
 
-  // ── Push permission ────────────────────────────────────────────────────────
+  // ── Push ───────────────────────────────────────────────────────────────────
   const handleEnablePush = async () => {
     const ok = await requestPushPermission();
     setPushEnabled(ok);
@@ -299,7 +386,7 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     else localToast("Notifications blocked. Enable in browser settings.", "error");
   };
 
-  // ── Handlers ──────────────────────────────────────────────────────────────
+  // ── Handlers ───────────────────────────────────────────────────────────────
   const handleSettleShare = useCallback(async (expenseId, forUsername, amount) => {
     try {
       await apiCall("/settle", {
@@ -336,337 +423,312 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
   }, [activeGroup, username, password, localToast]);
 
   const handleSettleAll = useCallback(async (memberName, totalAmount) => {
-  // Find all unsettled expenses where this member owes money
-  const unsettled = groupExpenses.filter(e =>
-    e.splits?.some(s => s.username === memberName && !s.paid && e.paid_by === username)
-  );
-
-  let settled = 0;
-  for (const e of unsettled) {
-    for (const s of e.splits) {
-      if (s.username === memberName && !s.paid) {
-        try {
-          await handleSettleShare(e.expense_id, memberName, s.share);
-          settled += s.share;
-        } catch {}
+    const unsettled = groupExpenses.filter(e =>
+      e.splits?.some(s => s.username === memberName && !s.paid && e.paid_by === username)
+    );
+    for (const e of unsettled) {
+      for (const s of e.splits) {
+        if (s.username === memberName && !s.paid) {
+          try { await handleSettleShare(e.expense_id, memberName, s.share); } catch {}
+        }
       }
     }
-  }
+    if (onRecordTransaction) {
+      onRecordTransaction({
+        amount: totalAmount,
+        category: "Other",
+        description: `${memberName} settled all dues`,
+        reason: `Group: ${activeGroup.name} — full settlement`,
+        type: "income",
+        accountId: budget?.defaultAccountId || null,
+        accountName: budget?.accounts?.find(a => a.id === budget?.defaultAccountId)?.name || null,
+      });
+    }
+    localToast(`✅ Settled ${fmt(totalAmount)} from ${memberName} · added to Records & account`, "success");
+    setSettleAllModal(null);
+  }, [groupExpenses, username, handleSettleShare, onRecordTransaction, activeGroup, budget, localToast]);
 
-  // Record as income in parent expense tracker
-  if (onRecordTransaction) {
-    onRecordTransaction({
-      amount: totalAmount,
-      category: "Other",
-      description: `${memberName} settled all dues`,
-      reason: `Group: ${activeGroup.name} — full settlement`,
-      type: "income",
-      accountId: budget?.defaultAccountId || null,
-      accountName: budget?.accounts?.find(a => a.id === budget?.defaultAccountId)?.name || null,
-    });
-  }
-
-  localToast(`✅ Settled all ${fmt(totalAmount)} from ${memberName} · added to Records`, "success");
-  setSettleAllModal(null);
-}, [groupExpenses, username, handleSettleShare, onRecordTransaction, activeGroup, budget, localToast]);
-
-  // ── Not authed state ───────────────────────────────────────────────────────
-//   if (!isAuthed) {
-//     return (
-//       <div className="gs-empty-state">
-//         <div className="gs-empty-icon">🔐</div>
-//         <h3>Sign in required</h3>
-//         <p>Save your expenses to cloud first to use Group Splits.<br/>
-//            Then come back here — your username will be used as your group identity.</p>
-//       </div>
-//     );
-//   }
-
-
-
+  // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <>
       <style>{GS_CSS}</style>
       <div className="gs-root">
-{!isAuthed ? (
-        <GroupSignIn onSignIn={onSignIn} showToast={showToast || localToast} />
-      ) :(
-        <>
-        {/* ── LIST VIEW ── */}
-        {view === "list" && (
-          <div className="gs-list-view">
-            <div className="gs-list-header">
-              <div>
-                <h2 className="gs-section-title">🤝 Group Splits</h2>
-                <p className="gs-section-sub">Signed in as <strong style={{ color: "#f59e0b" }}>@{username}</strong></p>
-              </div>
-              <div className="gs-header-actions">
-                {!pushEnabled && (
-                  <button className="gs-notif-btn" onClick={handleEnablePush} title="Enable notifications">🔔</button>
+        {!isAuthed ? (
+          <GroupSignIn onSignIn={onSignIn} showToast={showToast || localToast} />
+        ) : (
+          <>
+            {/* ── LIST VIEW ── */}
+            {view === "list" && (
+              <div className="gs-list-view">
+                <div className="gs-list-header">
+                  <div>
+                    <h2 className="gs-section-title">🤝 Group Splits</h2>
+                    <p className="gs-section-sub">Signed in as <strong style={{ color: "#f59e0b" }}>@{username}</strong></p>
+                  </div>
+                  <div className="gs-header-actions">
+                    {!pushEnabled && (
+                      <button className="gs-notif-btn" onClick={handleEnablePush} title="Enable notifications">🔔</button>
+                    )}
+                    <button className="gs-btn gs-btn--secondary" onClick={() => setJoinModal(true)}>🔗 Join</button>
+                    <button className="gs-btn gs-btn--primary" onClick={() => setCreateModal(true)}>+ New Group</button>
+                  </div>
+                </div>
+
+                {loading && <div className="gs-loading"><div className="gs-spinner" /><span>Loading groups…</span></div>}
+
+                {!loading && groups.length === 0 && (
+                  <div className="gs-empty-state">
+                    <div className="gs-empty-icon">👥</div>
+                    <h3>No groups yet</h3>
+                    <p>Create a group or join one via an invite link to split expenses with friends.</p>
+                    <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 16 }}>
+                      <button className="gs-btn gs-btn--primary" onClick={() => setCreateModal(true)}>+ Create Group</button>
+                      <button className="gs-btn gs-btn--secondary" onClick={() => setJoinModal(true)}>🔗 Join via Link</button>
+                    </div>
+                  </div>
                 )}
-                <button className="gs-btn gs-btn--secondary" onClick={() => setJoinModal(true)}>🔗 Join</button>
-                <button className="gs-btn gs-btn--primary" onClick={() => setCreateModal(true)}>+ New Group</button>
-              </div>
-            </div>
 
-            {loading && <div className="gs-loading"><div className="gs-spinner"/><span>Loading groups…</span></div>}
-
-            {!loading && groups.length === 0 && (
-              <div className="gs-empty-state">
-                <div className="gs-empty-icon">👥</div>
-                <h3>No groups yet</h3>
-                <p>Create a group or join one via an invite link to split expenses with friends.</p>
-                <div style={{ display: "flex", gap: 10, justifyContent: "center", marginTop: 16 }}>
-                  <button className="gs-btn gs-btn--primary" onClick={() => setCreateModal(true)}>+ Create Group</button>
-                  <button className="gs-btn gs-btn--secondary" onClick={() => setJoinModal(true)}>🔗 Join via Link</button>
+                <div className="gs-group-grid">
+                  {groups.map(g => (
+                    <GroupCard key={g.group_id} group={g} username={username} onOpen={() => loadGroupDetail(g.group_id)} />
+                  ))}
                 </div>
               </div>
             )}
 
-            <div className="gs-group-grid">
-              {groups.map(g => (
-                <GroupCard key={g.group_id} group={g} username={username} onOpen={() => loadGroupDetail(g.group_id)} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* ── DETAIL VIEW ── */}
-        {view === "detail" && activeGroup && (
-          <div className="gs-detail-view">
-            {/* Header */}
-            <div className="gs-detail-header">
-              <button className="gs-back-btn" onClick={() => { setView("list"); setActiveGroup(null); loadGroups(); }}>
-                ← Back
-              </button>
-              <div className="gs-detail-title-wrap">
-                <h2 className="gs-detail-title">{activeGroup.name}</h2>
-                {activeGroup.description && <p className="gs-detail-desc">{activeGroup.description}</p>}
-              </div>
-              <div className="gs-detail-actions">
-                {!pushEnabled && <button className="gs-notif-btn" onClick={handleEnablePush}>🔔</button>}
-                <button className="gs-btn gs-btn--ghost" onClick={() => setInviteModal(true)}>🔗 Invite</button>
-                {activeGroup.admin === username && (
-                  <button className="gs-btn gs-btn--ghost" onClick={() => setAddMemberModal(true)}>+ Member</button>
-                )}
-                <button className="gs-btn gs-btn--primary" onClick={() => setAddExpModal(true)}>+ Expense</button>
-              </div>
-            </div>
-
-            {/* Balance cards */}
-            <div className="gs-balance-strip">
-              <div className="gs-bal-card gs-bal-card--owe">
-                <span className="gs-bal-label">You Owe</span>
-                <span className="gs-bal-val">{fmt(balanceSummary.youOwe)}</span>
-              </div>
-              <div className="gs-bal-card gs-bal-card--owed">
-                <span className="gs-bal-label">Others Owe You</span>
-                <span className="gs-bal-val">{fmt(balanceSummary.othersOwe)}</span>
-              </div>
-              <div className="gs-bal-card gs-bal-card--settled">
-                <span className="gs-bal-label">Total Settled</span>
-                <span className="gs-bal-val">{fmt(balanceSummary.settledTotal)}</span>
-              </div>
-              <div className="gs-bal-card gs-bal-card--members">
-                <span className="gs-bal-label">Members</span>
-                <span className="gs-bal-val">{activeGroup.members?.length || 0}</span>
-              </div>
-            </div>
-
-            {/* Members */}
-            <div className="gs-members-row">
-              {(activeGroup.members || []).map(m => (
-                <div key={m} className="gs-member-chip">
-                  <span className="gs-member-avatar" style={{ background: m === username ? "#f59e0b33" : "#6366f133", color: m === username ? "#f59e0b" : "#818cf8" }}>
-                    {m[0].toUpperCase()}
-                  </span>
-                  <span className="gs-member-name">{m}{m === username ? " (you)" : ""}{m === activeGroup.admin ? " ⭐" : ""}</span>
-                  {activeGroup.admin === username && m !== username && (
-                    <button className="gs-member-remove" onClick={() => setRemoveModal(m)}>✕</button>
-                  )}
+            {/* ── DETAIL VIEW ── */}
+            {view === "detail" && activeGroup && (
+              <div className="gs-detail-view">
+                <div className="gs-detail-header">
+                  <button className="gs-back-btn" onClick={() => { setView("list"); setActiveGroup(null); setGroupExpenses([]); loadGroups(); }}>
+                    ← Back
+                  </button>
+                  <div className="gs-detail-title-wrap">
+                    <h2 className="gs-detail-title">{activeGroup.name}</h2>
+                    {activeGroup.description && <p className="gs-detail-desc">{activeGroup.description}</p>}
+                  </div>
+                  <div className="gs-detail-actions">
+                    {!pushEnabled && <button className="gs-notif-btn" onClick={handleEnablePush}>🔔</button>}
+                    <button className="gs-btn gs-btn--ghost" onClick={() => setInviteModal(true)}>🔗 Invite</button>
+                    {activeGroup.admin === username && (
+                      <button className="gs-btn gs-btn--ghost" onClick={() => setAddMemberModal(true)}>+ Member</button>
+                    )}
+                    <button className="gs-btn gs-btn--primary" onClick={() => setAddExpModal(true)}>+ Expense</button>
+                  </div>
                 </div>
-              ))}
-            </div>
 
-            {/* Per-person balance */}
-            <PersonBalances
-                personOwes={personOwes}
-                username={username}
-                members={activeGroup.members || []}
-                onSettleAll={(memberName, amount) => setSettleAllModal({ name: memberName, amount })}
-                />
-
-            {/* Period + filters */}
-            <div className="gs-filters-row">
-              <div className="et-view-toggle">
-                {[["month", "Month"], ["year", "Year"]].map(([v, l]) => (
-                  <button key={v} className={`et-view-btn ${periodView === v ? "et-view-btn--active" : ""}`}
-                    onClick={() => setPeriodView(v)}>{l}</button>
-                ))}
-              </div>
-              {allPeriods.length > 0 && (
-                <select className="gs-period-sel" value={selectedPeriod} onChange={e => setSelectedPeriod(e.target.value)}>
-                  {allPeriods.map(p => <option key={p} value={p}>{periodView === "month" ? monthLabel(p) : p}</option>)}
-                </select>
-              )}
-              <select className="gs-period-sel" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
-                <option value="all">All Categories</option>
-                {[...new Set(groupExpenses.map(e => e.category))].map(c => (
-                  <option key={c} value={c}>{CAT_ICONS[c] || "📌"} {c}</option>
-                ))}
-              </select>
-              <button
-                className={`gs-btn gs-btn--ghost ${compareMode ? "gs-btn--active" : ""}`}
-                onClick={() => setCompareMode(p => !p)}
-              >📊 Compare</button>
-            </div>
-
-            {/* Compare view */}
-            {compareMode && comparePeriods && (
-              <CompareView cur={comparePeriods.cur} prev={comparePeriods.prev} periodView={periodView} />
-            )}
-
-            {/* Period summary */}
-            {!compareMode && selectedPeriod && (
-              <PeriodSummary expenses={filteredExpenses} periodLabel={periodView === "month" ? monthLabel(selectedPeriod) : selectedPeriod} />
-            )}
-
-            {/* Expenses list */}
-            <div className="gs-expenses-list">
-              {filteredExpenses.length === 0 ? (
-                <div className="gs-empty-state" style={{ padding: "32px 0" }}>
-                  <div className="gs-empty-icon">💸</div>
-                  <p>No expenses for this period.</p>
-                  <button className="gs-btn gs-btn--primary" style={{ marginTop: 12 }} onClick={() => setAddExpModal(true)}>+ Add First Expense</button>
+                {/* Balance cards */}
+                <div className="gs-balance-strip">
+                  <div className="gs-bal-card gs-bal-card--owe">
+                    <span className="gs-bal-label">You Owe</span>
+                    <span className="gs-bal-val">{fmt(balanceSummary.youOwe)}</span>
+                  </div>
+                  <div className="gs-bal-card gs-bal-card--owed">
+                    <span className="gs-bal-label">Others Owe You</span>
+                    <span className="gs-bal-val">{fmt(balanceSummary.othersOwe)}</span>
+                  </div>
+                  <div className="gs-bal-card gs-bal-card--settled">
+                    <span className="gs-bal-label">Total Settled</span>
+                    <span className="gs-bal-val">{fmt(balanceSummary.settledTotal)}</span>
+                  </div>
+                  <div className="gs-bal-card gs-bal-card--members">
+                    <span className="gs-bal-label">Members</span>
+                    <span className="gs-bal-val">{activeGroup.members?.length || 0}</span>
+                  </div>
                 </div>
-              ) : filteredExpenses.map(e => (
-                <GroupExpenseCard
-                  key={e.expense_id}
-                  expense={e}
+
+                {/* Members */}
+                <div className="gs-members-row">
+                  {(activeGroup.members || []).map(m => (
+                    <div key={m} className="gs-member-chip">
+                      <span className="gs-member-avatar" style={{ background: m === username ? "#f59e0b33" : "#6366f133", color: m === username ? "#f59e0b" : "#818cf8" }}>
+                        {m[0].toUpperCase()}
+                      </span>
+                      <span className="gs-member-name">{m}{m === username ? " (you)" : ""}{m === activeGroup.admin ? " ⭐" : ""}</span>
+                      {activeGroup.admin === username && m !== username && (
+                        <button className="gs-member-remove" onClick={() => setRemoveModal(m)}>✕</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Per-person balance */}
+                <PersonBalances
+                  personOwes={personOwes}
                   username={username}
-                  isAdmin={activeGroup.admin === username}
-                  onSettle={(forUser, amount) => handleSettleShare(e.expense_id, forUser, amount)}
-                  onDelete={() => handleDeleteExpense(e.expense_id)}
+                  members={activeGroup.members || []}
+                  onSettleAll={(memberName, amount) => setSettleAllModal({ name: memberName, amount })}
                 />
-              ))}
-            </div>
-          </div>
-        )}
 
-        {/* ── Modals ── */}
-        {createModal && (
-          <CreateGroupModal
-            username={username} password={password}
-            onClose={() => setCreateModal(false)}
-            onCreated={(g) => { setCreateModal(false); loadGroups(); localToast(`✅ Group "${g.name || "group"}" created!`, "success"); }}
-          />
-        )}
-        {joinModal && (
-          <JoinGroupModal
-            username={username} password={password}
-            onClose={() => setJoinModal(false)}
-            onJoined={() => { setJoinModal(false); loadGroups(); localToast("✅ Joined group!", "success"); }}
-          />
-        )}
-        {addExpModal && activeGroup && (
-          <AddExpenseModal
-            username={username} password={password}
-            group={activeGroup}
-            onClose={() => setAddExpModal(false)}
-            onAdded={(exp) => {
-              setAddExpModal(false);
-              setGroupExpenses(prev => [exp, ...prev]);
-              // Also record in parent's expense tracker
-              if (onRecordTransaction) {
-                const myShare = exp.splits.find(s => s.username === username);
-                if (myShare) {
-                  onRecordTransaction({
-                    amount: exp.amount,
-                    category: exp.category,
-                    description: `[${activeGroup.name}] ${exp.description}`,
-                    reason: `Group split — your share: ${fmt(myShare.share)}`,
-                    type: "expense",
-                    accountId: budget?.defaultAccountId || null,
-                    accountName: budget?.accounts?.find(a => a.id === budget?.defaultAccountId)?.name || null,
-                  });
-                }
-              }
-              localToast(`✅ Expense added to ${activeGroup.name}`, "success");
-            }}
-          />
-        )}
-        {inviteModal && activeGroup && (
-          <InviteModal
-            username={username} password={password}
-            group={activeGroup}
-            onClose={() => setInviteModal(false)}
-          />
-        )}
-        {addMemberModal && activeGroup && (
-          <AddMemberModal
-            username={username} password={password}
-            groupId={activeGroup.group_id}
-            onClose={() => setAddMemberModal(false)}
-            onAdded={(mem) => {
-              setAddMemberModal(false);
-              setActiveGroup(prev => ({ ...prev, members: [...(prev.members || []), mem] }));
-              localToast(`✅ ${mem} added to group`, "success");
-            }}
-          />
-        )}
-        {removeModal && activeGroup && (
-          <div className="et-modal-overlay" onClick={() => setRemoveModal(null)}>
-            <div className="et-modal" onClick={e => e.stopPropagation()}>
-              <div className="et-modal-icon">🗑️</div>
-              <h3>Remove Member?</h3>
-              <p>Remove <strong>{removeModal}</strong> from <strong>{activeGroup.name}</strong>?</p>
-              <div className="et-modal-actions">
-                <button className="et-modal-cancel" onClick={() => setRemoveModal(null)}>Cancel</button>
-                <button className="et-modal-confirm" onClick={async () => {
-                  try {
-                    await apiCall("/remove-member", { username, password, group_id: activeGroup.group_id, member_username: removeModal });
-                    setActiveGroup(prev => ({ ...prev, members: prev.members.filter(m => m !== removeModal) }));
-                    localToast(`✅ ${removeModal} removed.`, "success");
-                  } catch (e) { localToast("⚠️ " + e.message, "error"); }
-                  setRemoveModal(null);
-                }}>Remove</button>
+                {/* Period + filters */}
+                <div className="gs-filters-row">
+                  <div className="et-view-toggle">
+                    {[["month", "Month"], ["year", "Year"]].map(([v, l]) => (
+                      <button key={v} className={`et-view-btn ${periodView === v ? "et-view-btn--active" : ""}`}
+                        onClick={() => setPeriodView(v)}>{l}</button>
+                    ))}
+                  </div>
+                  {allPeriods.length > 0 && (
+                    <select className="gs-period-sel" value={selectedPeriod} onChange={e => setSelectedPeriod(e.target.value)}>
+                      {allPeriods.map(p => <option key={p} value={p}>{periodView === "month" ? monthLabel(p) : p}</option>)}
+                    </select>
+                  )}
+                  <select className="gs-period-sel" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
+                    <option value="all">All Categories</option>
+                    {[...new Set(groupExpenses.map(e => e.category))].map(c => (
+                      <option key={c} value={c}>{CAT_ICONS[c] || "📌"} {c}</option>
+                    ))}
+                  </select>
+                  <button
+                    className={`gs-btn gs-btn--ghost ${compareMode ? "gs-btn--active" : ""}`}
+                    onClick={() => setCompareMode(p => !p)}
+                  >📊 Compare</button>
+                </div>
+
+                {compareMode && comparePeriods && (
+                  <CompareView cur={comparePeriods.cur} prev={comparePeriods.prev} periodView={periodView} />
+                )}
+
+                {!compareMode && selectedPeriod && (
+                  <PeriodSummary expenses={filteredExpenses} periodLabel={periodView === "month" ? monthLabel(selectedPeriod) : selectedPeriod} />
+                )}
+
+                {/* Expenses list */}
+                <div className="gs-expenses-list">
+                  {filteredExpenses.length === 0 ? (
+                    <div className="gs-empty-state" style={{ padding: "32px 0" }}>
+                      <div className="gs-empty-icon">💸</div>
+                      <p>No expenses for this period.</p>
+                      <button className="gs-btn gs-btn--primary" style={{ marginTop: 12 }} onClick={() => setAddExpModal(true)}>+ Add First Expense</button>
+                    </div>
+                  ) : filteredExpenses.map(e => (
+                    <GroupExpenseCard
+                      key={e.expense_id}
+                      expense={e}
+                      username={username}
+                      isAdmin={activeGroup.admin === username}
+                      onSettle={(forUser, amount) => handleSettleShare(e.expense_id, forUser, amount)}
+                      onDelete={() => handleDeleteExpense(e.expense_id)}
+                    />
+                  ))}
+                </div>
               </div>
-            </div>
-          </div>
-        )}
-        {settleAllModal && (
-            <div className="et-modal-overlay" onClick={() => setSettleAllModal(null)}>
+            )}
+
+            {/* ── Modals ── */}
+            {createModal && (
+              <CreateGroupModal
+                username={username} password={password}
+                onClose={() => setCreateModal(false)}
+                onCreated={(g) => { setCreateModal(false); loadGroups(); localToast(`✅ Group "${g.name || "group"}" created!`, "success"); }}
+              />
+            )}
+            {joinModal && (
+              <JoinGroupModal
+                username={username} password={password}
+                onClose={() => setJoinModal(false)}
+                onJoined={() => { setJoinModal(false); loadGroups(); localToast("✅ Joined group!", "success"); }}
+              />
+            )}
+            {addExpModal && activeGroup && (
+              <AddExpenseModal
+                username={username} password={password}
+                group={activeGroup}
+                onClose={() => setAddExpModal(false)}
+                onAdded={(exp) => {
+                  setAddExpModal(false);
+                  // Dedup: WS may also deliver this expense
+                  setGroupExpenses(prev => dedupExpenses([exp, ...prev]));
+                  if (onRecordTransaction) {
+                    const myShare = exp.splits?.find(s => s.username === username);
+                    if (myShare) {
+                      onRecordTransaction({
+                        amount: exp.amount,
+                        category: exp.category,
+                        description: `[${activeGroup.name}] ${exp.description}`,
+                        reason: `Group split — your share: ${fmt(myShare.share)}`,
+                        type: "expense",
+                        accountId: budget?.defaultAccountId || null,
+                        accountName: budget?.accounts?.find(a => a.id === budget?.defaultAccountId)?.name || null,
+                      });
+                    }
+                  }
+                  localToast(`✅ Expense added to ${activeGroup.name}`, "success");
+                }}
+              />
+            )}
+            {inviteModal && activeGroup && (
+              <InviteModal
+                username={username} password={password}
+                group={activeGroup}
+                onClose={() => setInviteModal(false)}
+              />
+            )}
+            {addMemberModal && activeGroup && (
+              <AddMemberModal
+                username={username} password={password}
+                groupId={activeGroup.group_id}
+                onClose={() => setAddMemberModal(false)}
+                onAdded={(mem) => {
+                  setAddMemberModal(false);
+                  setActiveGroup(prev => ({ ...prev, members: [...(prev.members || []), mem] }));
+                  localToast(`✅ ${mem} added to group`, "success");
+                }}
+              />
+            )}
+            {removeModal && activeGroup && (
+              <div className="et-modal-overlay" onClick={() => setRemoveModal(null)}>
                 <div className="et-modal" onClick={e => e.stopPropagation()}>
-                <div className="et-modal-icon">💰</div>
-                <h3>Settle All for {settleAllModal.name}?</h3>
-                <p>
+                  <div className="et-modal-icon">🗑️</div>
+                  <h3>Remove Member?</h3>
+                  <p>Remove <strong>{removeModal}</strong> from <strong>{activeGroup.name}</strong>?</p>
+                  <div className="et-modal-actions">
+                    <button className="et-modal-cancel" onClick={() => setRemoveModal(null)}>Cancel</button>
+                    <button className="et-modal-confirm" onClick={async () => {
+                      try {
+                        await apiCall("/remove-member", { username, password, group_id: activeGroup.group_id, member_username: removeModal });
+                        setActiveGroup(prev => ({ ...prev, members: prev.members.filter(m => m !== removeModal) }));
+                        localToast(`✅ ${removeModal} removed.`, "success");
+                      } catch (e) { localToast("⚠️ " + e.message, "error"); }
+                      setRemoveModal(null);
+                    }}>Remove</button>
+                  </div>
+                </div>
+              </div>
+            )}
+            {settleAllModal && (
+              <div className="et-modal-overlay" onClick={() => setSettleAllModal(null)}>
+                <div className="et-modal" onClick={e => e.stopPropagation()}>
+                  <div className="et-modal-icon">💰</div>
+                  <h3>Settle All for {settleAllModal.name}?</h3>
+                  <p>
                     Mark <strong style={{ color: "#22c55e" }}>{fmt(settleAllModal.amount)}</strong> as fully paid by{" "}
                     <strong style={{ color: "#f59e0b" }}>{settleAllModal.name}</strong>.
                     <br /><br />
                     This will be recorded as <strong>income</strong> and credited to your default account.
-                </p>
-                <div className="et-modal-actions">
+                  </p>
+                  <div className="et-modal-actions">
                     <button className="et-modal-cancel" onClick={() => setSettleAllModal(null)}>Cancel</button>
                     <button
-                    className="et-modal-confirm"
-                    style={{ background: "linear-gradient(135deg,#22c55e,#16a34a)" }}
-                    onClick={() => handleSettleAll(settleAllModal.name, settleAllModal.amount)}
+                      className="et-modal-confirm"
+                      style={{ background: "linear-gradient(135deg,#22c55e,#16a34a)" }}
+                      onClick={() => handleSettleAll(settleAllModal.name, settleAllModal.amount)}
                     >
-                    ✓ Settle All {fmt(settleAllModal.amount)}
+                      ✓ Settle All {fmt(settleAllModal.amount)}
                     </button>
+                  </div>
                 </div>
-                </div>
-            </div>
+              </div>
             )}
 
-        {/* Local toast fallback */}
-        {!showToast && toast && (
-          <div className="et-toast" style={{ borderColor: toast.type === "success" ? "#22c55e44" : "#f59e0b44", background: toast.type === "success" ? "#22c55e12" : "#f59e0b12" }}>
-            <span style={{ color: toast.type === "success" ? "#22c55e" : "#f59e0b" }}>{toast.type === "success" ? "✓" : "⚠️"}</span>
-            <span>{toast.msg}</span>
-          </div>
-        )}
-        </>
+            {/* Local toast fallback */}
+            {!showToast && toast && (
+              <div className="et-toast" style={{ borderColor: toast.type === "success" ? "#22c55e44" : "#f59e0b44", background: toast.type === "success" ? "#22c55e12" : "#f59e0b12" }}>
+                <span style={{ color: toast.type === "success" ? "#22c55e" : "#f59e0b" }}>{toast.type === "success" ? "✓" : "⚠️"}</span>
+                <span>{toast.msg}</span>
+              </div>
+            )}
+          </>
         )}
       </div>
     </>
@@ -678,7 +740,6 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
 // ══════════════════════════════════════════════════════════════════════════════
 
 function GroupCard({ group, username, onOpen }) {
-  const netBalance = group.others_owe - group.you_owe;
   return (
     <div className="gs-group-card" onClick={onOpen}>
       <div className="gs-gc-top">
@@ -692,15 +753,9 @@ function GroupCard({ group, username, onOpen }) {
       </div>
       {group.description && <p className="gs-gc-desc">{group.description}</p>}
       <div className="gs-gc-balances">
-        {group.you_owe > 0 && (
-          <span className="gs-gc-badge gs-gc-badge--owe">You owe {fmt(group.you_owe)}</span>
-        )}
-        {group.others_owe > 0 && (
-          <span className="gs-gc-badge gs-gc-badge--owed">Owed {fmt(group.others_owe)}</span>
-        )}
-        {group.you_owe === 0 && group.others_owe === 0 && (
-          <span className="gs-gc-badge gs-gc-badge--clear">✓ All settled</span>
-        )}
+        {group.you_owe > 0 && <span className="gs-gc-badge gs-gc-badge--owe">You owe {fmt(group.you_owe)}</span>}
+        {group.others_owe > 0 && <span className="gs-gc-badge gs-gc-badge--owed">Owed {fmt(group.others_owe)}</span>}
+        {group.you_owe === 0 && group.others_owe === 0 && <span className="gs-gc-badge gs-gc-badge--clear">✓ All settled</span>}
       </div>
     </div>
   );
@@ -714,27 +769,28 @@ function PersonBalances({ personOwes, username, members, onSettleAll }) {
       <p className="gs-subsection-label">👥 Who Owes What</p>
       <div className="gs-person-grid">
         {others.map(([u, data]) => {
-          const net = Math.round((data.owes - data.paid) * 100) / 100;
-          const isPaid = net <= 0;
+          const unsettledDue = Math.round(data.owes * 100) / 100;
+          const settledAmt   = Math.round(data.paid * 100) / 100;
+          const isPaid       = unsettledDue <= 0;
           return (
             <div key={u} className={`gs-person-card ${isPaid ? "gs-person-card--clear" : ""}`}>
               <span className="gs-person-avatar">{u[0].toUpperCase()}</span>
               <div className="gs-person-info">
                 <span className="gs-person-name">{u}</span>
-                <span className="gs-person-detail">Owes: {fmt(data.owes)} · Paid: {fmt(data.paid)}</span>
+                <span className="gs-person-detail">Unsettled: {fmt(unsettledDue)} · Settled: {fmt(settledAmt)}</span>
               </div>
               <div className="gs-person-right">
                 <span className={`gs-person-net ${!isPaid ? "gs-person-net--due" : "gs-person-net--clear"}`}>
-                  {isPaid ? "✓ Cleared" : fmt(net) + " due"}
+                  {isPaid ? "✓ Cleared" : fmt(unsettledDue) + " due"}
                 </span>
-                {!isPaid && (
-                  <button
-                    className="gs-settle-all-btn"
-                    onClick={() => onSettleAll && onSettleAll(u, net)}
-                  >
-                    ✓ Settle All
-                  </button>
-                )}
+                <button
+                  className={`gs-settle-all-btn ${isPaid ? "gs-settle-all-btn--done" : ""}`}
+                  onClick={() => !isPaid && onSettleAll && onSettleAll(u, unsettledDue)}
+                  disabled={isPaid}
+                  title={isPaid ? "Nothing to settle" : `Settle ${fmt(unsettledDue)}`}
+                >
+                  {isPaid ? "✓ Settled" : "✓ Settle All"}
+                </button>
               </div>
             </div>
           );
@@ -747,9 +803,7 @@ function PersonBalances({ personOwes, username, members, onSettleAll }) {
 function PeriodSummary({ expenses, periodLabel }) {
   const total = expenses.reduce((s, e) => s + e.amount, 0);
   const bycat = {};
-  for (const e of expenses) {
-    bycat[e.category] = (bycat[e.category] || 0) + e.amount;
-  }
+  for (const e of expenses) bycat[e.category] = (bycat[e.category] || 0) + e.amount;
   const topCat = Object.entries(bycat).sort((a, b) => b[1] - a[1])[0];
   if (expenses.length === 0) return null;
   return (
@@ -823,12 +877,12 @@ function CompareView({ cur, prev, periodView }) {
 }
 
 function GroupExpenseCard({ expense, username, isAdmin, onSettle, onDelete }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded,   setExpanded]   = useState(false);
   const [confirmDel, setConfirmDel] = useState(false);
   const myShare = expense.splits?.find(s => s.username === username);
   const settled = expense.splits?.every(s => s.paid);
   const isPayer = expense.paid_by === username;
-  const color = CAT_COLORS[expense.category] || "#6b7280";
+  const color   = CAT_COLORS[expense.category] || "#6b7280";
 
   return (
     <div className={`gs-exp-card ${settled ? "gs-exp-card--settled" : ""}`}>
@@ -853,17 +907,17 @@ function GroupExpenseCard({ expense, username, isAdmin, onSettle, onDelete }) {
           )}
           {settled && <span className="gs-settled-badge">✓ Settled</span>}
         </div>
-        <span className="gs-exp-chevron" style={{ color: "rgba(255,255,255,0.2)" }}>{expanded ? "▾" : "▸"}</span>
+        <span className="gs-exp-chevron">{expanded ? "▾" : "▸"}</span>
       </div>
 
       {expanded && (
         <div className="gs-exp-splits">
           <p className="gs-splits-label">Splits</p>
           {(expense.splits || []).map((s, i) => {
-            const isMe = s.username === username;
+            const isMe      = s.username === username;
             const canSettle = isPayer && !s.paid && s.username !== username;
             return (
-              <div key={i} className={`gs-split-row ${s.paid ? "gs-split-row--paid" : ""}`}>
+              <div key={`${expense.expense_id}-${s.username}-${i}`} className={`gs-split-row ${s.paid ? "gs-split-row--paid" : ""}`}>
                 <span className="gs-split-avatar" style={{ background: isMe ? "#f59e0b22" : "#6366f122", color: isMe ? "#f59e0b" : "#818cf8" }}>
                   {s.username[0].toUpperCase()}
                 </span>
@@ -954,7 +1008,7 @@ function JoinGroupModal({ username, password, onClose, onJoined }) {
   const [err, setErr]         = useState("");
 
   const handleJoin = async () => {
-    const t = token.trim().split("/").pop(); // support full URL or just token
+    const t = token.trim().split("/").pop();
     if (!t) { setErr("Enter invite link or token."); return; }
     setLoading(true); setErr("");
     try {
@@ -989,9 +1043,9 @@ function JoinGroupModal({ username, password, onClose, onJoined }) {
 
 // ── Invite Modal ───────────────────────────────────────────────────────────────
 function InviteModal({ username, password, group, onClose }) {
-  const [token, setToken]     = useState("");
+  const [token, setToken]   = useState("");
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied]   = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -1027,7 +1081,9 @@ function InviteModal({ username, password, group, onClose }) {
               <span className="gs-invite-token">{inviteLink || "Loading…"}</span>
               <button className="gs-copy-btn" onClick={handleCopy}>{copied ? "✓ Copied!" : "📋 Copy"}</button>
             </div>
-            <p style={{ fontSize: 10, color: "rgba(255,255,255,0.25)", textAlign: "center", marginTop: 8 }}>Or share token only: <strong style={{ color: "#f59e0b", fontFamily: "monospace" }}>{token}</strong></p>
+            <p style={{ fontSize: 10, color: "rgba(255,255,255,0.25)", textAlign: "center", marginTop: 8 }}>
+              Or share token only: <strong style={{ color: "#f59e0b", fontFamily: "monospace" }}>{token}</strong>
+            </p>
           </>
         )}
         <div className="et-modal-actions">
@@ -1083,16 +1139,14 @@ function AddMemberModal({ username, password, groupId, onClose, onAdded }) {
 // ── Add Expense Modal ──────────────────────────────────────────────────────────
 function AddExpenseModal({ username, password, group, onClose, onAdded }) {
   const members = group.members || [];
-  const [amount, setAmount]   = useState("");
-  const [cat, setCat]         = useState("Food");
-  const [desc, setDesc]       = useState("");
-  const [reason, setReason]   = useState("");
-  const [splitMode, setSplitMode] = useState("equal"); // equal | custom
-  const [shares, setShares]   = useState(() =>
-    Object.fromEntries(members.map(m => [m, ""]))
-  );
-  const [loading, setLoading] = useState(false);
-  const [err, setErr]         = useState("");
+  const [amount,    setAmount]    = useState("");
+  const [cat,       setCat]       = useState("Food");
+  const [desc,      setDesc]      = useState("");
+  const [reason,    setReason]    = useState("");
+  const [splitMode, setSplitMode] = useState("equal");
+  const [shares,    setShares]    = useState(() => Object.fromEntries(members.map(m => [m, ""])));
+  const [loading,   setLoading]   = useState(false);
+  const [err,       setErr]       = useState("");
 
   const equalShare = amount && members.length ? (parseFloat(amount) / members.length).toFixed(2) : "";
 
@@ -1113,12 +1167,9 @@ function AddExpenseModal({ username, password, group, onClose, onAdded }) {
       const d = await apiCall("/add-expense", {
         username, password,
         group_id: group.group_id,
-        amount: amt,
-        category: cat,
-        description: desc.trim(),
-        reason: reason.trim(),
-        timestamp: Date.now(),
-        splits,
+        amount: amt, category: cat,
+        description: desc.trim(), reason: reason.trim(),
+        timestamp: Date.now(), splits,
       });
       onAdded(d.expense);
     } catch (e) { setErr(e.message); }
@@ -1225,14 +1276,15 @@ function AddExpenseModal({ username, password, group, onClose, onAdded }) {
   );
 }
 
+// ── GroupSignIn ────────────────────────────────────────────────────────────────
 function GroupSignIn({ onSignIn, showToast }) {
-  const [step,      setStep]     = useState("username");
-  const [username,  setUsername] = useState("");
-  const [password,  setPassword] = useState("");
-  const [userExists,setUserExists] = useState(null);
-  const [loading,   setLoading]  = useState(false);
-  const [showPw,    setShowPw]   = useState(false);
-  const [err,       setErr]      = useState("");
+  const [step,       setStep]      = useState("username");
+  const [username,   setUsername]  = useState("");
+  const [password,   setPassword]  = useState("");
+  const [userExists, setUserExists] = useState(null);
+  const [loading,    setLoading]   = useState(false);
+  const [showPw,     setShowPw]    = useState(false);
+  const [err,        setErr]       = useState("");
 
   const handleUsernameNext = async () => {
     const u = username.trim().toLowerCase();
@@ -1240,39 +1292,30 @@ function GroupSignIn({ onSignIn, showToast }) {
     setErr(""); setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/expenses/check-user`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: u }),
       });
       const d = await res.json();
       setUserExists(d.exists);
       setStep("password");
-    } catch {
-      setErr("Could not reach server. Try again.");
-    } finally {
-      setLoading(false);
-    }
+    } catch { setErr("Could not reach server. Try again."); }
+    finally { setLoading(false); }
   };
 
   const handleSignIn = async () => {
     if (password.length < 4) { setErr("Min 4 characters."); return; }
     setErr(""); setLoading(true);
     try {
-      // Validate by doing a quick sync attempt
       const res = await fetch(`${API_BASE}/expenses/sync`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim().toLowerCase(), password }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Invalid credentials.");
       if (onSignIn) onSignIn({ username: username.trim().toLowerCase(), password });
       if (showToast) showToast(`✅ Signed in as @${username.trim().toLowerCase()}`, "success");
-    } catch (e) {
-      setErr(e.message);
-    } finally {
-      setLoading(false);
-    }
+    } catch (e) { setErr(e.message); }
+    finally { setLoading(false); }
   };
 
   const hk = (e, fn) => { if (e.key === "Enter") fn(); };
@@ -1288,23 +1331,13 @@ function GroupSignIn({ onSignIn, showToast }) {
           <>
             <div className="et-cloud-field">
               <label>Username</label>
-              <input
-                className="et-cloud-input"
-                type="text"
-                value={username}
+              <input className="et-cloud-input" type="text" value={username}
                 onChange={e => { setUsername(e.target.value); setErr(""); }}
                 onKeyDown={e => hk(e, handleUsernameNext)}
-                placeholder="Your cloud username"
-                autoFocus
-                autoComplete="username"
-              />
+                placeholder="Your cloud username" autoFocus autoComplete="username" />
             </div>
             {err && <div className="et-cloud-error">⚠️ {err}</div>}
-            <button
-              className="gs-signin-btn"
-              onClick={handleUsernameNext}
-              disabled={loading || !username.trim()}
-            >
+            <button className="gs-signin-btn" onClick={handleUsernameNext} disabled={loading || !username.trim()}>
               {loading ? "Checking…" : "Continue →"}
             </button>
           </>
@@ -1330,16 +1363,11 @@ function GroupSignIn({ onSignIn, showToast }) {
             <div className="et-cloud-field">
               <label>{userExists === false ? "Create password" : "Password"}</label>
               <div className="et-api-input-wrap">
-                <input
-                  className="et-api-input"
-                  type={showPw ? "text" : "password"}
-                  value={password}
+                <input className="et-api-input" type={showPw ? "text" : "password"} value={password}
                   onChange={e => { setPassword(e.target.value); setErr(""); }}
                   onKeyDown={e => hk(e, handleSignIn)}
                   placeholder={userExists === false ? "Min 4 chars" : "Enter password"}
-                  autoFocus
-                  autoComplete={userExists === false ? "new-password" : "current-password"}
-                />
+                  autoFocus autoComplete={userExists === false ? "new-password" : "current-password"} />
                 <button className="et-api-toggle" onClick={() => setShowPw(s => !s)}>
                   {showPw
                     ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
@@ -1348,12 +1376,8 @@ function GroupSignIn({ onSignIn, showToast }) {
               </div>
             </div>
             {err && <div className="et-cloud-error">⚠️ {err}</div>}
-            <button
-              className="gs-signin-btn"
-              onClick={handleSignIn}
-              disabled={loading || !password}
-              style={{ background: loading ? "#333" : "linear-gradient(135deg,#6366f1,#a855f7)" }}
-            >
+            <button className="gs-signin-btn" onClick={handleSignIn} disabled={loading || !password}
+              style={{ background: loading ? "#333" : "linear-gradient(135deg,#6366f1,#a855f7)" }}>
               {loading ? "Signing in…" : userExists === false ? "🚀 Create & Sign In" : "🔓 Sign In"}
             </button>
           </>
@@ -1371,18 +1395,13 @@ function GroupSignIn({ onSignIn, showToast }) {
 // ── CSS
 // ══════════════════════════════════════════════════════════════════════════════
 const GS_CSS = `
-/* ── GroupSplits root ── */
 .gs-root{display:flex;flex-direction:column;height:100%;min-height:0;overflow-y:auto;padding:14px 16px;gap:14px;}
 .gs-root::-webkit-scrollbar{width:3px;}.gs-root::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.07);border-radius:4px;}
-
-/* ── List view ── */
 .gs-list-view{display:flex;flex-direction:column;gap:14px;}
 .gs-list-header{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;}
 .gs-section-title{font-size:17px;font-weight:800;color:#fff;margin:0;}
 .gs-section-sub{font-size:11px;color:rgba(255,255,255,0.35);margin:3px 0 0;}
 .gs-header-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
-
-/* ── Sign-in screen ── */
 .gs-signin-wrap{display:flex;align-items:center;justify-content:center;min-height:100%;padding:24px;}
 .gs-signin-card{width:100%;max-width:360px;display:flex;flex-direction:column;gap:12px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:20px;padding:28px 24px;}
 .gs-signin-icon{font-size:36px;text-align:center;line-height:1;}
@@ -1393,8 +1412,6 @@ const GS_CSS = `
 .gs-signin-btn:disabled{opacity:0.4;cursor:not-allowed;transform:none;}
 .gs-signin-user-badge{display:flex;align-items:center;gap:9px;padding:8px 11px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:9px;font-size:13px;font-weight:600;color:rgba(255,255,255,0.75);}
 .gs-signin-hint{font-size:10px;color:rgba(255,255,255,0.2);text-align:center;line-height:1.6;margin-top:4px;}
-
-/* ── Buttons ── */
 .gs-btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:20px;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}
 .gs-btn--primary{background:linear-gradient(135deg,#6366f1,#a855f7);color:#fff;}.gs-btn--primary:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(99,102,241,0.35);}
 .gs-btn--secondary{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:rgba(255,255,255,0.7);}.gs-btn--secondary:hover{background:rgba(255,255,255,0.1);color:#fff;}
@@ -1402,18 +1419,12 @@ const GS_CSS = `
 .gs-btn--ghost.gs-btn--active{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.35);color:#f59e0b;}
 .gs-btn--danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;}.gs-btn--danger:hover{transform:translateY(-1px);}
 .gs-notif-btn{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:20px;padding:7px 10px;font-size:14px;cursor:pointer;transition:all 0.15s;}.gs-notif-btn:hover{background:rgba(245,158,11,0.2);}
-
-/* ── Loading ── */
 .gs-loading{display:flex;align-items:center;justify-content:center;gap:10px;padding:32px;color:rgba(255,255,255,0.4);font-size:13px;}
 .gs-spinner{width:18px;height:18px;border:2px solid rgba(255,255,255,0.1);border-top-color:rgba(245,158,11,0.8);border-radius:50%;animation:gs-spin 0.7s linear infinite;}
 @keyframes gs-spin{to{transform:rotate(360deg)}}
-
-/* ── Empty state ── */
 .gs-empty-state{display:flex;flex-direction:column;align-items:center;gap:8px;padding:48px 24px;text-align:center;color:rgba(255,255,255,0.4);}
 .gs-empty-state h3{font-size:16px;color:rgba(255,255,255,0.7);margin:0;}.gs-empty-state p{font-size:13px;line-height:1.6;margin:0;}
 .gs-empty-icon{font-size:40px;line-height:1;}
-
-/* ── Group grid ── */
 .gs-group-grid{display:flex;flex-direction:column;gap:10px;}
 .gs-group-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:14px;cursor:pointer;transition:all 0.15s;}
 .gs-group-card:hover{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.14);transform:translateY(-1px);}
@@ -1428,21 +1439,15 @@ const GS_CSS = `
 .gs-gc-badge--owe{background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.25);color:#ef4444;}
 .gs-gc-badge--owed{background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.25);color:#22c55e;}
 .gs-gc-badge--clear{background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.15);color:rgba(34,197,94,0.7);}
-
-
-/* ── Settle All button ── */
 .gs-person-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
 .gs-settle-all-btn{padding:4px 11px;border-radius:8px;border:1px solid rgba(34,197,94,0.35);background:rgba(34,197,94,0.1);color:#22c55e;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}
-.gs-settle-all-btn:hover{background:rgba(34,197,94,0.22);transform:translateY(-1px);box-shadow:0 3px 10px rgba(34,197,94,0.2);}
-
-/* ── Detail view ── */
+.gs-settle-all-btn:hover:not(:disabled){background:rgba(34,197,94,0.22);transform:translateY(-1px);box-shadow:0 3px 10px rgba(34,197,94,0.2);}
+.gs-settle-all-btn--done{border-color:rgba(34,197,94,0.15)!important;background:rgba(34,197,94,0.04)!important;color:rgba(34,197,94,0.35)!important;cursor:not-allowed!important;transform:none!important;box-shadow:none!important;}
 .gs-detail-view{display:flex;flex-direction:column;gap:14px;}
 .gs-detail-header{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;}
 .gs-back-btn{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:6px 13px;color:rgba(255,255,255,0.6);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all 0.15s;flex-shrink:0;white-space:nowrap;}.gs-back-btn:hover{color:#fff;background:rgba(255,255,255,0.09);}
 .gs-detail-title-wrap{flex:1;}.gs-detail-title{font-size:17px;font-weight:800;color:#fff;margin:0;}.gs-detail-desc{font-size:11px;color:rgba(255,255,255,0.3);margin:3px 0 0;}
 .gs-detail-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
-
-/* ── Balance strip ── */
 .gs-balance-strip{display:flex;gap:8px;flex-wrap:wrap;}
 .gs-bal-card{flex:1;min-width:80px;border-radius:12px;padding:10px 13px;display:flex;flex-direction:column;gap:4px;}
 .gs-bal-card--owe{background:rgba(239,68,68,0.09);border:1px solid rgba(239,68,68,0.2);}
@@ -1451,15 +1456,11 @@ const GS_CSS = `
 .gs-bal-card--members{background:rgba(245,158,11,0.09);border:1px solid rgba(245,158,11,0.2);}
 .gs-bal-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:rgba(255,255,255,0.4);}
 .gs-bal-val{font-size:15px;font-weight:800;color:#fff;font-family:'JetBrains Mono',monospace;}
-
-/* ── Members row ── */
 .gs-members-row{display:flex;flex-wrap:wrap;gap:6px;}
 .gs-member-chip{display:flex;align-items:center;gap:6px;padding:4px 10px 4px 4px;border-radius:20px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);}
 .gs-member-avatar{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;}
 .gs-member-name{font-size:11px;color:rgba(255,255,255,0.6);}
 .gs-member-remove{background:none;border:none;color:rgba(239,68,68,0.4);cursor:pointer;font-size:11px;padding:1px 3px;border-radius:4px;line-height:1;transition:color 0.15s;}.gs-member-remove:hover{color:#ef4444;}
-
-/* ── Person balances ── */
 .gs-person-balances{display:flex;flex-direction:column;gap:8px;}
 .gs-subsection-label{font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.25);}
 .gs-person-grid{display:flex;flex-direction:column;gap:6px;}
@@ -1468,20 +1469,14 @@ const GS_CSS = `
 .gs-person-avatar{width:32px;height:32px;border-radius:50%;background:rgba(245,158,11,0.15);color:#f59e0b;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;}
 .gs-person-info{flex:1;display:flex;flex-direction:column;gap:2px;}.gs-person-name{font-size:13px;font-weight:700;color:#fff;}.gs-person-detail{font-size:10px;color:rgba(255,255,255,0.35);font-family:'JetBrains Mono',monospace;}
 .gs-person-net{font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;}.gs-person-net--due{color:#f59e0b;}.gs-person-net--clear{color:#22c55e;}
-
-/* ── Filters row ── */
 .gs-filters-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
 .gs-period-sel{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:20px;padding:5px 12px;color:var(--text,#e4e4f0);font-size:11px;font-weight:600;font-family:inherit;outline:none;cursor:pointer;appearance:none;-webkit-appearance:none;}
 .gs-period-sel option{background:#1a1a2e;color:#fff;}
-
-/* ── Period summary ── */
 .gs-period-summary{display:flex;align-items:center;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:12px 14px;gap:0;flex-wrap:wrap;}
 .gs-ps-item{flex:1;display:flex;flex-direction:column;gap:3px;align-items:center;min-width:80px;}
 .gs-ps-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:rgba(255,255,255,0.3);}
 .gs-ps-val{font-size:16px;font-weight:800;color:#fff;font-family:'JetBrains Mono',monospace;text-align:center;}
 .gs-ps-div{width:1px;background:rgba(255,255,255,0.07);height:34px;flex-shrink:0;margin:0 6px;}
-
-/* ── Compare ── */
 .gs-compare-wrap{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px;}
 .gs-cmp-top{display:flex;align-items:center;gap:14px;justify-content:space-between;}
 .gs-cmp-col{display:flex;flex-direction:column;gap:3px;}.gs-cmp-period{font-size:10px;color:rgba(255,255,255,0.4);}.gs-cmp-total{font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;}.gs-cmp-txns{font-size:10px;color:rgba(255,255,255,0.3);}
@@ -1489,10 +1484,8 @@ const GS_CSS = `
 .gs-cmp-cat-row{display:flex;align-items:center;gap:8px;}.gs-cmp-cat-icon{font-size:15px;flex-shrink:0;}.gs-cmp-cat-name{font-size:11px;color:rgba(255,255,255,0.5);width:76px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .gs-cmp-bars{flex:1;display:flex;flex-direction:column;gap:3px;}
 .gs-cmp-bar-row{display:flex;align-items:center;gap:6px;}
-.gs-cmp-bar{height:6px;border-radius:3px;min-width:3px;transition:width 0.5s ease;}.gs-cmp-bar--cur{opacity:1;}.gs-cmp-bar--prev{background:rgba(255,255,255,0.15);}
+.gs-cmp-bar{height:6px;border-radius:3px;min-width:3px;transition:width 0.5s ease;}.gs-cmp-bar--prev{background:rgba(255,255,255,0.15);}
 .gs-cmp-bar-val{font-size:10px;font-family:'JetBrains Mono',monospace;white-space:nowrap;}
-
-/* ── Expense cards ── */
 .gs-expenses-list{display:flex;flex-direction:column;gap:8px;}
 .gs-exp-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden;transition:background 0.15s;}
 .gs-exp-card--settled{opacity:0.6;}
@@ -1503,9 +1496,7 @@ const GS_CSS = `
 .gs-exp-total{font-size:15px;font-weight:800;font-family:'JetBrains Mono',monospace;}
 .gs-exp-myshare{font-size:10px;color:rgba(255,255,255,0.35);font-family:'JetBrains Mono',monospace;}.gs-exp-myshare--paid{color:#22c55e;}
 .gs-settled-badge{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;color:#22c55e;background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.22);padding:2px 7px;border-radius:20px;}
-.gs-exp-chevron{font-size:13px;flex-shrink:0;margin-top:2px;}
-
-/* ── Splits detail ── */
+.gs-exp-chevron{font-size:13px;flex-shrink:0;margin-top:2px;color:rgba(255,255,255,0.2);}
 .gs-exp-splits{border-top:1px solid rgba(255,255,255,0.06);padding:12px;display:flex;flex-direction:column;gap:7px;}
 .gs-splits-label{font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.25);}
 .gs-split-row{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:8px;transition:background 0.12s;}.gs-split-row:hover{background:rgba(255,255,255,0.03);}
@@ -1516,33 +1507,23 @@ const GS_CSS = `
 .gs-settle-btn{padding:4px 10px;border-radius:8px;border:1px solid rgba(34,197,94,0.3);background:rgba(34,197,94,0.1);color:#22c55e;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;}.gs-settle-btn:hover{background:rgba(34,197,94,0.22);}
 .gs-del-exp-btn{align-self:flex-start;padding:5px 11px;border-radius:8px;border:1px solid rgba(239,68,68,0.22);background:transparent;color:rgba(239,68,68,0.5);font-size:11px;cursor:pointer;font-family:inherit;transition:all 0.15s;margin-top:4px;}.gs-del-exp-btn:hover{background:rgba(239,68,68,0.1);color:#ef4444;}
 .gs-confirm-del{display:flex;align-items:center;gap:8px;padding:8px;background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:8px;font-size:12px;color:rgba(255,255,255,0.6);}
-
-/* ── Modal extras ── */
-.gs-modal{max-width:400px !important;text-align:left;}
-.gs-exp-modal{max-width:440px !important;}
+.gs-modal{max-width:400px!important;text-align:left;}
+.gs-exp-modal{max-width:440px!important;}
 .gs-exp-form{display:flex;flex-direction:column;gap:10px;}
 .gs-form-row{display:flex;gap:10px;}.gs-form-row .et-cloud-field{flex:1;}
 .gs-split-mode-toggle{display:flex;gap:6px;}
 .gs-split-mode-btn{flex:1;padding:7px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:rgba(255,255,255,0.4);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all 0.15s;text-align:center;}
 .gs-split-mode-btn--active{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.35);color:#f59e0b;}
-
-/* ── Equal preview ── */
 .gs-equal-preview{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:9px;padding:10px;display:flex;flex-direction:column;gap:7px;}
 .gs-equal-members{display:flex;flex-direction:column;gap:5px;}
 .gs-equal-member{display:flex;align-items:center;gap:7px;font-size:12px;color:rgba(255,255,255,0.6);}
-
-/* ── Custom splits ── */
 .gs-custom-splits{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:9px;padding:10px;display:flex;flex-direction:column;gap:6px;}
 .gs-custom-split-row{display:flex;align-items:center;gap:8px;}
 .gs-share-input{width:80px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:7px;padding:6px 9px;color:#fff;font-size:12px;font-family:monospace;outline:none;text-align:right;}
 .gs-share-input:focus{border-color:rgba(245,158,11,0.4);}
-
-/* ── Invite box ── */
 .gs-invite-box{display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:9px;}
 .gs-invite-token{flex:1;font-size:10px;color:rgba(255,255,255,0.5);font-family:'JetBrains Mono',monospace;word-break:break-all;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .gs-copy-btn{padding:5px 11px;border-radius:8px;border:1px solid rgba(245,158,11,0.3);background:rgba(245,158,11,0.1);color:#f59e0b;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}.gs-copy-btn:hover{background:rgba(245,158,11,0.22);}
-
-/* ── Responsive ── */
 @media(max-width:600px){
   .gs-balance-strip{gap:6px;}.gs-bal-card{min-width:70px;padding:8px 10px;}.gs-bal-val{font-size:13px;}
   .gs-detail-header{flex-direction:column;}.gs-detail-actions{width:100%;justify-content:flex-end;}
