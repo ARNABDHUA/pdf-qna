@@ -90,3 +90,34 @@ self.addEventListener('fetch', event => {
     fetch(event.request).catch(() => caches.match(event.request))
   );
 });
+
+
+// ADD these two handlers to your existing sw.js
+
+self.addEventListener('push', event => {
+  if (!event.data) return;
+  const data = event.data.json();          // { title, body, groupId, url }
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body:    data.body,
+      icon:    '/favicon.svg',
+      badge:   '/favicon.svg',
+      tag:     `group-${data.groupId}`,
+      renotify: true,
+      data:    { url: data.url || '/expenses' },
+    })
+  );
+});
+
+self.addEventListener('notificationclick', event => {
+  event.notification.close();
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
+      for (const client of list) {
+        if (client.url.includes('/expenses') && 'focus' in client)
+          return client.focus();
+      }
+      return clients.openWindow(event.notification.data.url);
+    })
+  );
+});

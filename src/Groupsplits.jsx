@@ -1,6 +1,5 @@
 // GroupSplits.jsx — Group-based split expenses for ExpenseTracker
-// Integrates with group_splits_routes.py backend
-// Features: create/join groups, add expenses, settle, real-time WS + polling fallback, push notifications
+// Web Push notifications fully integrated (works outside browser/Chrome)
 // Usage: import GroupSplits from "./GroupSplits"; then add as a tab in ExpenseTracker
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -17,7 +16,7 @@ const yearKey    = (ts) => String(new Date(ts + 5.5 * 3600000).getUTCFullYear())
 const monthLabel = (mk) => { const [y, m] = mk.split("-").map(Number); return new Date(y, m - 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" }); };
 const uid        = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 
-// ── Dedup helper — always use this when setting groupExpenses ─────────────────
+// ── Dedup helper ───────────────────────────────────────────────────────────────
 const dedupExpenses = (arr) =>
   Array.from(new Map((arr || []).map(e => [e.expense_id, e])).values())
     .sort((a, b) => b.timestamp - a.timestamp);
@@ -38,27 +37,78 @@ async function apiCall(path, body) {
   return d;
 }
 
-// ── Push notification helpers ──────────────────────────────────────────────────
-async function requestPushPermission() {
-  if (!("Notification" in window) || !("serviceWorker" in navigator)) return false;
-  if (Notification.permission === "granted") return true;
-  const perm = await Notification.requestPermission();
-  return perm === "granted";
+// ── Web Push helpers ───────────────────────────────────────────────────────────
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64  = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw     = window.atob(base64);
+  return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
 }
 
-function showLocalNotification(title, body, groupId) {
-  if (!("Notification" in window) || Notification.permission !== "granted") return;
+async function fetchVapidPublicKey() {
   try {
-    const n = new Notification(title, {
-      body,
-      icon: `${window.location.origin}/favicon.ico`,
-      badge: `${window.location.origin}/favicon.ico`,
-      tag: `group-${groupId}`,
-      renotify: true,
+    const res = await fetch(`${API_BASE}/groups/vapid-public-key`);
+    if (!res.ok) return null;
+    const d = await res.json();
+    return d.vapid_public_key || null;
+  } catch {
+    return null;
+  }
+}
+
+async function subscribeToPush(username, password) {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    return { ok: false, reason: "Push not supported in this browser." };
+  }
+
+  const perm = await Notification.requestPermission();
+  if (perm !== "granted") {
+    return { ok: false, reason: "Notification permission denied." };
+  }
+
+  try {
+    const vapidKey = await fetchVapidPublicKey();
+    if (!vapidKey) {
+      return { ok: false, reason: "Push not configured on server." };
+    }
+
+    const reg      = await navigator.serviceWorker.ready;
+    const existing = await reg.pushManager.getSubscription();
+
+    const sub = existing || await reg.pushManager.subscribe({
+      userVisibleOnly:      true,
+      applicationServerKey: urlBase64ToUint8Array(vapidKey),
     });
-    n.onclick = () => { window.focus(); n.close(); };
+
+    // Send subscription to backend
+    await apiCall("/push-subscribe", {
+      username,
+      password,
+      subscription: sub.toJSON(),
+    });
+
+    return { ok: true, sub };
   } catch (e) {
-    console.warn("Notification error:", e);
+    console.warn("Push subscribe error:", e);
+    return { ok: false, reason: e.message || "Unknown error." };
+  }
+}
+
+async function unsubscribeFromPush(username, password) {
+  if (!("serviceWorker" in navigator)) return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await apiCall("/push-unsubscribe", {
+        username,
+        password,
+        endpoint: sub.endpoint,
+      });
+      await sub.unsubscribe();
+    }
+  } catch (e) {
+    console.warn("Push unsubscribe error:", e);
   }
 }
 
@@ -77,7 +127,8 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
   const [selectedPeriod, setSelectedPeriod] = useState("");
   const [catFilter,      setCatFilter]      = useState("all");
   const [compareMode,    setCompareMode]    = useState(false);
-  const [pushEnabled,    setPushEnabled]    = useState(Notification?.permission === "granted");
+  const [pushEnabled,    setPushEnabled]    = useState(false);
+  const [pushLoading,    setPushLoading]    = useState(false);
   const [toast,          setToast]          = useState(null);
 
   // Modals
@@ -98,6 +149,21 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
   const lastExpCountRef    = useRef(0);
 
   const isAuthed = username && password;
+
+  // ── Check push status on mount ────────────────────────────────────────────
+  useEffect(() => {
+    if (!isAuthed) return;
+    const checkPush = async () => {
+      if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) return;
+      if (Notification.permission !== "granted") return;
+      try {
+        const reg = await navigator.serviceWorker.ready;
+        const sub = await reg.pushManager.getSubscription();
+        setPushEnabled(!!sub);
+      } catch {}
+    };
+    checkPush();
+  }, [isAuthed]);
 
   const localToast = useCallback((msg, type = "success") => {
     if (showToast) showToast(msg, type);
@@ -128,21 +194,20 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
           ? prev
           : dedupExpenses([msg.expense, ...prev])
       );
+      // In-app toast only (push notification handles background case)
       if (msg.expense.paid_by !== username) {
-        showLocalNotification(
-          `💸 New expense in ${msg.group_name || "group"}`,
-          `${msg.expense.paid_by} added ${fmt(msg.expense.amount)} for ${msg.expense.description}`,
-          gid
-        );
         localToast(`🆕 ${msg.expense.paid_by} added ${fmt(msg.expense.amount)} — ${msg.expense.description}`, "info");
       }
     }
     if (msg.type === "share_settled") {
       setGroupExpenses(prev => prev.map(e => {
         if (e.expense_id !== msg.expense_id) return e;
-        return { ...e, splits: e.splits.map(s =>
-          s.username === msg.settled_for ? { ...s, paid: true } : s
-        )};
+        return {
+          ...e,
+          splits: e.splits.map(s =>
+            s.username === msg.settled_for ? { ...s, paid: true } : s
+          ),
+        };
       }));
       if (msg.settled_by !== username) {
         localToast(`✅ ${msg.settled_by} settled ${fmt(msg.amount)} for ${msg.settled_for}`, "success");
@@ -162,7 +227,6 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     }
   }, [username, localToast]);
 
-  // Keep refs fresh
   useEffect(() => { handleWsMessageRef.current = handleWsMessage; }, [handleWsMessage]);
 
   // ── Load group detail ──────────────────────────────────────────────────────
@@ -175,7 +239,7 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
       setGroupExpenses(dedupExpenses(d.expenses || []));
       setView("detail");
       const ist = new Date(Date.now() + 5.5 * 3600000);
-      const mk = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, "0")}`;
+      const mk  = `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, "0")}`;
       setSelectedPeriod(mk);
     } catch (e) {
       localToast("⚠️ " + e.message, "error");
@@ -184,7 +248,6 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     }
   }, [username, password, isAuthed, localToast]);
 
-  // Sync loadGroupDetail ref AFTER it is defined
   useEffect(() => { loadGroupDetailRef.current = loadGroupDetail; }, [loadGroupDetail]);
 
   // ── WebSocket + polling fallback ───────────────────────────────────────────
@@ -197,7 +260,6 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     let retryTimeout = null;
     let wsConnected  = false;
 
-    // Polling fallback
     const startPolling = () => {
       if (pollRef.current) return;
       pollRef.current = setInterval(async () => {
@@ -207,7 +269,7 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
           return;
         }
         try {
-          const d = await apiCall(`/${gid}/detail`, { username, password });
+          const d        = await apiCall(`/${gid}/detail`, { username, password });
           const incoming = dedupExpenses(d.expenses || []);
           if (incoming.length !== lastExpCountRef.current) {
             lastExpCountRef.current = incoming.length;
@@ -224,7 +286,6 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
       }
     };
 
-    // Setup WS handlers
     const setupWs = (ws) => {
       const openTimeout = setTimeout(() => {
         if (!wsConnected) startPolling();
@@ -233,12 +294,11 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
       ws.onopen = () => {
         clearTimeout(openTimeout);
         if (destroyed) { ws.close(); return; }
-        wsConnected = true;
-        wsRef.current[gid] = ws;
+        wsConnected         = true;
+        wsRef.current[gid]  = ws;
         wsRetry.current[gid] = 0;
         clearTimeout(retryTimeout);
         stopPolling();
-
         pingInterval = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "ping" }));
@@ -272,8 +332,6 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     const connect = () => {
       if (destroyed) return;
       const wsUrl = `${API_BASE.replace(/^https/, "wss").replace(/^http/, "ws")}/groups/ws/${gid}/${encodeURIComponent(username)}`;
-
-      // Ping health first to avoid WS attempt on sleeping server
       fetch(`${API_BASE}/health`, { method: "GET" })
         .then(() => {
           if (destroyed) return;
@@ -282,18 +340,15 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
           catch { startPolling(); scheduleRetry(); return; }
           setupWs(ws);
         })
-        .catch(() => {
-          startPolling();
-          scheduleRetry();
-        });
+        .catch(() => { startPolling(); scheduleRetry(); });
     };
 
     const scheduleRetry = () => {
       if (destroyed) return;
-      const attempt = (wsRetry.current[gid] || 0) + 1;
+      const attempt        = (wsRetry.current[gid] || 0) + 1;
       wsRetry.current[gid] = attempt;
-      const delay = Math.min(2000 * Math.pow(2, attempt - 1), 30000);
-      retryTimeout = setTimeout(connect, delay);
+      const delay          = Math.min(2000 * Math.pow(2, attempt - 1), 30000);
+      retryTimeout         = setTimeout(connect, delay);
     };
 
     lastExpCountRef.current = groupExpenses.length;
@@ -327,9 +382,9 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
 
   const filteredExpenses = useMemo(() => {
     return groupExpenses.filter(e => {
-      const pk = periodView === "month" ? monthKey(e.timestamp) : yearKey(e.timestamp);
+      const pk          = periodView === "month" ? monthKey(e.timestamp) : yearKey(e.timestamp);
       const periodMatch = !selectedPeriod || pk === selectedPeriod;
-      const catMatch = catFilter === "all" || e.category === catFilter;
+      const catMatch    = catFilter === "all" || e.category === catFilter;
       return periodMatch && catMatch;
     });
   }, [groupExpenses, periodView, selectedPeriod, catFilter]);
@@ -344,7 +399,11 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
         if (s.paid) settledTotal += s.share;
       }
     }
-    return { youOwe: Math.round(youOwe * 100) / 100, othersOwe: Math.round(othersOwe * 100) / 100, settledTotal };
+    return {
+      youOwe:       Math.round(youOwe * 100) / 100,
+      othersOwe:    Math.round(othersOwe * 100) / 100,
+      settledTotal,
+    };
   }, [groupExpenses, activeGroup, username]);
 
   const personOwes = useMemo(() => {
@@ -355,7 +414,7 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
         if (!map[s.username]) map[s.username] = { owes: 0, paid: 0 };
         if (s.username !== e.paid_by) {
           if (s.paid) map[s.username].paid += s.share;
-          else map[s.username].owes += s.share;
+          else        map[s.username].owes += s.share;
         }
       }
     }
@@ -365,42 +424,64 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
   const comparePeriods = useMemo(() => {
     if (!compareMode || allPeriods.length < 2) return null;
     const [cur, prev] = allPeriods;
-    const forPeriod = (pk) => {
-      const exps = groupExpenses.filter(e => {
+    const forPeriod   = (pk) => {
+      const exps  = groupExpenses.filter(e => {
         const k = periodView === "month" ? monthKey(e.timestamp) : yearKey(e.timestamp);
         return k === pk;
       });
-      const total = exps.reduce((s, e) => s + e.amount, 0);
+      const total  = exps.reduce((s, e) => s + e.amount, 0);
       const catMap = {};
       for (const e of exps) catMap[e.category] = (catMap[e.category] || 0) + e.amount;
       return { total, count: exps.length, catMap };
     };
-    return { cur: { key: cur, ...forPeriod(cur) }, prev: { key: prev, ...forPeriod(prev) } };
+    return {
+      cur:  { key: cur,  ...forPeriod(cur) },
+      prev: { key: prev, ...forPeriod(prev) },
+    };
   }, [compareMode, allPeriods, groupExpenses, periodView]);
 
-  // ── Push ───────────────────────────────────────────────────────────────────
-  const handleEnablePush = async () => {
-    const ok = await requestPushPermission();
-    setPushEnabled(ok);
-    if (ok) localToast("🔔 Notifications enabled!", "success");
-    else localToast("Notifications blocked. Enable in browser settings.", "error");
+  // ── Push toggle ────────────────────────────────────────────────────────────
+  const handleTogglePush = async () => {
+    if (!isAuthed) return;
+    setPushLoading(true);
+    try {
+      if (pushEnabled) {
+        await unsubscribeFromPush(username, password);
+        setPushEnabled(false);
+        localToast("🔕 Push notifications disabled.", "info");
+      } else {
+        const result = await subscribeToPush(username, password);
+        if (result.ok) {
+          setPushEnabled(true);
+          localToast("🔔 Push notifications enabled! You'll get notified even when the app is closed.", "success");
+        } else {
+          localToast("⚠️ " + result.reason, "error");
+        }
+      }
+    } finally {
+      setPushLoading(false);
+    }
   };
 
   // ── Handlers ───────────────────────────────────────────────────────────────
   const handleSettleShare = useCallback(async (expenseId, forUsername, amount) => {
     try {
       await apiCall("/settle", {
-        username, password,
-        group_id: activeGroup.group_id,
-        expense_id: expenseId,
-        settled_for_username: forUsername,
+        username,
+        password,
+        group_id:              activeGroup.group_id,
+        expense_id:            expenseId,
+        settled_for_username:  forUsername,
         amount,
       });
       setGroupExpenses(prev => prev.map(e => {
         if (e.expense_id !== expenseId) return e;
-        return { ...e, splits: e.splits.map(s =>
-          s.username === forUsername ? { ...s, paid: true } : s
-        )};
+        return {
+          ...e,
+          splits: e.splits.map(s =>
+            s.username === forUsername ? { ...s, paid: true } : s
+          ),
+        };
       }));
       localToast(`✅ Settled ${fmt(amount)} for ${forUsername}`, "success");
     } catch (err) {
@@ -411,8 +492,9 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
   const handleDeleteExpense = useCallback(async (expenseId) => {
     try {
       await apiCall("/delete-expense", {
-        username, password,
-        group_id: activeGroup.group_id,
+        username,
+        password,
+        group_id:   activeGroup.group_id,
         expense_id: expenseId,
       });
       setGroupExpenses(prev => prev.filter(e => e.expense_id !== expenseId));
@@ -435,12 +517,12 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     }
     if (onRecordTransaction) {
       onRecordTransaction({
-        amount: totalAmount,
-        category: "Other",
+        amount:      totalAmount,
+        category:    "Other",
         description: `${memberName} settled all dues`,
-        reason: `Group: ${activeGroup.name} — full settlement`,
-        type: "income",
-        accountId: budget?.defaultAccountId || null,
+        reason:      `Group: ${activeGroup.name} — full settlement`,
+        type:        "income",
+        accountId:   budget?.defaultAccountId || null,
         accountName: budget?.accounts?.find(a => a.id === budget?.defaultAccountId)?.name || null,
       });
     }
@@ -466,13 +548,30 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
                     <p className="gs-section-sub">Signed in as <strong style={{ color: "#f59e0b" }}>@{username}</strong></p>
                   </div>
                   <div className="gs-header-actions">
-                    {!pushEnabled && (
-                      <button className="gs-notif-btn" onClick={handleEnablePush} title="Enable notifications">🔔</button>
-                    )}
+                    {/* Push notification toggle */}
+                    <button
+                      className={`gs-push-btn ${pushEnabled ? "gs-push-btn--on" : ""}`}
+                      onClick={handleTogglePush}
+                      disabled={pushLoading}
+                      title={pushEnabled ? "Disable push notifications" : "Enable push notifications (works outside browser)"}
+                    >
+                      {pushLoading ? "⏳" : pushEnabled ? "🔔 Push ON" : "🔕 Push OFF"}
+                    </button>
                     <button className="gs-btn gs-btn--secondary" onClick={() => setJoinModal(true)}>🔗 Join</button>
                     <button className="gs-btn gs-btn--primary" onClick={() => setCreateModal(true)}>+ New Group</button>
                   </div>
                 </div>
+
+                {/* Push info banner — shown only when push is off */}
+                {!pushEnabled && (
+                  <div className="gs-push-banner">
+                    <span>🔔</span>
+                    <span>Enable <strong>Push Notifications</strong> to get notified about group expenses even when the app is closed.</span>
+                    <button className="gs-push-banner-btn" onClick={handleTogglePush} disabled={pushLoading}>
+                      {pushLoading ? "..." : "Enable"}
+                    </button>
+                  </div>
+                )}
 
                 {loading && <div className="gs-loading"><div className="gs-spinner" /><span>Loading groups…</span></div>}
 
@@ -508,7 +607,14 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
                     {activeGroup.description && <p className="gs-detail-desc">{activeGroup.description}</p>}
                   </div>
                   <div className="gs-detail-actions">
-                    {!pushEnabled && <button className="gs-notif-btn" onClick={handleEnablePush}>🔔</button>}
+                    <button
+                      className={`gs-push-btn gs-push-btn--sm ${pushEnabled ? "gs-push-btn--on" : ""}`}
+                      onClick={handleTogglePush}
+                      disabled={pushLoading}
+                      title={pushEnabled ? "Push ON — tap to disable" : "Push OFF — tap to enable"}
+                    >
+                      {pushLoading ? "⏳" : pushEnabled ? "🔔" : "🔕"}
+                    </button>
                     <button className="gs-btn gs-btn--ghost" onClick={() => setInviteModal(true)}>🔗 Invite</button>
                     {activeGroup.admin === username && (
                       <button className="gs-btn gs-btn--ghost" onClick={() => setAddMemberModal(true)}>+ Member</button>
@@ -570,7 +676,9 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
                   </div>
                   {allPeriods.length > 0 && (
                     <select className="gs-period-sel" value={selectedPeriod} onChange={e => setSelectedPeriod(e.target.value)}>
-                      {allPeriods.map(p => <option key={p} value={p}>{periodView === "month" ? monthLabel(p) : p}</option>)}
+                      {allPeriods.map(p => (
+                        <option key={p} value={p}>{periodView === "month" ? monthLabel(p) : p}</option>
+                      ))}
                     </select>
                   )}
                   <select className="gs-period-sel" value={catFilter} onChange={e => setCatFilter(e.target.value)}>
@@ -590,7 +698,10 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
                 )}
 
                 {!compareMode && selectedPeriod && (
-                  <PeriodSummary expenses={filteredExpenses} periodLabel={periodView === "month" ? monthLabel(selectedPeriod) : selectedPeriod} />
+                  <PeriodSummary
+                    expenses={filteredExpenses}
+                    periodLabel={periodView === "month" ? monthLabel(selectedPeriod) : selectedPeriod}
+                  />
                 )}
 
                 {/* Expenses list */}
@@ -637,18 +748,17 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
                 onClose={() => setAddExpModal(false)}
                 onAdded={(exp) => {
                   setAddExpModal(false);
-                  // Dedup: WS may also deliver this expense
                   setGroupExpenses(prev => dedupExpenses([exp, ...prev]));
                   if (onRecordTransaction) {
                     const myShare = exp.splits?.find(s => s.username === username);
                     if (myShare) {
                       onRecordTransaction({
-                        amount: exp.amount,
-                        category: exp.category,
+                        amount:      exp.amount,
+                        category:    exp.category,
                         description: `[${activeGroup.name}] ${exp.description}`,
-                        reason: `Group split — your share: ${fmt(myShare.share)}`,
-                        type: "expense",
-                        accountId: budget?.defaultAccountId || null,
+                        reason:      `Group split — your share: ${fmt(myShare.share)}`,
+                        type:        "expense",
+                        accountId:   budget?.defaultAccountId || null,
                         accountName: budget?.accounts?.find(a => a.id === budget?.defaultAccountId)?.name || null,
                       });
                     }
@@ -753,7 +863,7 @@ function GroupCard({ group, username, onOpen }) {
       </div>
       {group.description && <p className="gs-gc-desc">{group.description}</p>}
       <div className="gs-gc-balances">
-        {group.you_owe > 0 && <span className="gs-gc-badge gs-gc-badge--owe">You owe {fmt(group.you_owe)}</span>}
+        {group.you_owe > 0    && <span className="gs-gc-badge gs-gc-badge--owe">You owe {fmt(group.you_owe)}</span>}
         {group.others_owe > 0 && <span className="gs-gc-badge gs-gc-badge--owed">Owed {fmt(group.others_owe)}</span>}
         {group.you_owe === 0 && group.others_owe === 0 && <span className="gs-gc-badge gs-gc-badge--clear">✓ All settled</span>}
       </div>
@@ -801,8 +911,8 @@ function PersonBalances({ personOwes, username, members, onSettleAll }) {
 }
 
 function PeriodSummary({ expenses, periodLabel }) {
-  const total = expenses.reduce((s, e) => s + e.amount, 0);
-  const bycat = {};
+  const total  = expenses.reduce((s, e) => s + e.amount, 0);
+  const bycat  = {};
   for (const e of expenses) bycat[e.category] = (bycat[e.category] || 0) + e.amount;
   const topCat = Object.entries(bycat).sort((a, b) => b[1] - a[1])[0];
   if (expenses.length === 0) return null;
@@ -831,8 +941,8 @@ function PeriodSummary({ expenses, periodLabel }) {
 }
 
 function CompareView({ cur, prev, periodView }) {
-  const diff = cur.total - prev.total;
-  const pct  = prev.total > 0 ? Math.round(Math.abs(diff) / prev.total * 100) : 0;
+  const diff   = cur.total - prev.total;
+  const pct    = prev.total > 0 ? Math.round(Math.abs(diff) / prev.total * 100) : 0;
   const allCats = [...new Set([...Object.keys(cur.catMap), ...Object.keys(prev.catMap)])];
   return (
     <div className="gs-compare-wrap">
@@ -853,7 +963,7 @@ function CompareView({ cur, prev, periodView }) {
         </div>
       </div>
       {allCats.map(cat => {
-        const cv = cur.catMap[cat] || 0, pv = prev.catMap[cat] || 0;
+        const cv  = cur.catMap[cat] || 0, pv = prev.catMap[cat] || 0;
         const max = Math.max(cv, pv, 1);
         return (
           <div key={cat} className="gs-cmp-cat-row">
@@ -951,11 +1061,11 @@ function GroupExpenseCard({ expense, username, isAdmin, onSettle, onDelete }) {
 
 // ── Create Group Modal ─────────────────────────────────────────────────────────
 function CreateGroupModal({ username, password, onClose, onCreated }) {
-  const [name, setName]       = useState("");
-  const [desc, setDesc]       = useState("");
-  const [curr, setCurr]       = useState("INR");
+  const [name,    setName]    = useState("");
+  const [desc,    setDesc]    = useState("");
+  const [curr,    setCurr]    = useState("INR");
   const [loading, setLoading] = useState(false);
-  const [err, setErr]         = useState("");
+  const [err,     setErr]     = useState("");
 
   const handleCreate = async () => {
     if (!name.trim()) { setErr("Enter a group name."); return; }
@@ -1003,9 +1113,9 @@ function CreateGroupModal({ username, password, onClose, onCreated }) {
 
 // ── Join Group Modal ───────────────────────────────────────────────────────────
 function JoinGroupModal({ username, password, onClose, onJoined }) {
-  const [token, setToken]     = useState("");
+  const [token,   setToken]   = useState("");
   const [loading, setLoading] = useState(false);
-  const [err, setErr]         = useState("");
+  const [err,     setErr]     = useState("");
 
   const handleJoin = async () => {
     const t = token.trim().split("/").pop();
@@ -1043,9 +1153,9 @@ function JoinGroupModal({ username, password, onClose, onJoined }) {
 
 // ── Invite Modal ───────────────────────────────────────────────────────────────
 function InviteModal({ username, password, group, onClose }) {
-  const [token, setToken]   = useState("");
+  const [token,   setToken]   = useState("");
   const [loading, setLoading] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const [copied,  setCopied]  = useState(false);
 
   useEffect(() => {
     const load = async () => {
@@ -1096,9 +1206,9 @@ function InviteModal({ username, password, group, onClose }) {
 
 // ── Add Member Modal ───────────────────────────────────────────────────────────
 function AddMemberModal({ username, password, groupId, onClose, onAdded }) {
-  const [mem, setMem]         = useState("");
+  const [mem,     setMem]     = useState("");
   const [loading, setLoading] = useState(false);
-  const [err, setErr]         = useState("");
+  const [err,     setErr]     = useState("");
 
   const handleAdd = async () => {
     const m = mem.trim().toLowerCase();
@@ -1153,7 +1263,7 @@ function AddExpenseModal({ username, password, group, onClose, onAdded }) {
   const handleAdd = async () => {
     const amt = parseFloat(amount);
     if (!amt || amt <= 0) { setErr("Enter a valid amount."); return; }
-    if (!desc.trim()) { setErr("Enter a description."); return; }
+    if (!desc.trim())     { setErr("Enter a description."); return; }
 
     let splits = null;
     if (splitMode === "custom") {
@@ -1166,10 +1276,13 @@ function AddExpenseModal({ username, password, group, onClose, onAdded }) {
     try {
       const d = await apiCall("/add-expense", {
         username, password,
-        group_id: group.group_id,
-        amount: amt, category: cat,
-        description: desc.trim(), reason: reason.trim(),
-        timestamp: Date.now(), splits,
+        group_id:    group.group_id,
+        amount:      amt,
+        category:    cat,
+        description: desc.trim(),
+        reason:      reason.trim(),
+        timestamp:   Date.now(),
+        splits,
       });
       onAdded(d.expense);
     } catch (e) { setErr(e.message); }
@@ -1286,12 +1399,14 @@ function GroupSignIn({ onSignIn, showToast }) {
   const [showPw,     setShowPw]    = useState(false);
   const [err,        setErr]       = useState("");
 
+  const API_BASE_LOCAL = "https://pdf-qna-backend.onrender.com";
+
   const handleUsernameNext = async () => {
     const u = username.trim().toLowerCase();
     if (u.length < 2) { setErr("Min 2 characters."); return; }
     setErr(""); setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/expenses/check-user`, {
+      const res = await fetch(`${API_BASE_LOCAL}/expenses/check-user`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: u }),
       });
@@ -1306,7 +1421,7 @@ function GroupSignIn({ onSignIn, showToast }) {
     if (password.length < 4) { setErr("Min 4 characters."); return; }
     setErr(""); setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/expenses/sync`, {
+      const res = await fetch(`${API_BASE_LOCAL}/expenses/sync`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ username: username.trim().toLowerCase(), password }),
       });
@@ -1402,6 +1517,23 @@ const GS_CSS = `
 .gs-section-title{font-size:17px;font-weight:800;color:#fff;margin:0;}
 .gs-section-sub{font-size:11px;color:rgba(255,255,255,0.35);margin:3px 0 0;}
 .gs-header-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+
+/* Push button */
+.gs-push-btn{display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:20px;border:1px solid rgba(99,102,241,0.3);background:rgba(99,102,241,0.08);color:rgba(255,255,255,0.5);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}
+.gs-push-btn:hover:not(:disabled){background:rgba(99,102,241,0.18);color:#fff;}
+.gs-push-btn--on{border-color:rgba(34,197,94,0.4);background:rgba(34,197,94,0.1);color:#22c55e;}
+.gs-push-btn--on:hover:not(:disabled){background:rgba(34,197,94,0.2);}
+.gs-push-btn--sm{padding:5px 9px;font-size:14px;}
+.gs-push-btn:disabled{opacity:0.4;cursor:not-allowed;}
+
+/* Push info banner */
+.gs-push-banner{display:flex;align-items:center;gap:10px;padding:11px 14px;background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.2);border-radius:10px;font-size:12px;color:rgba(255,255,255,0.6);flex-wrap:wrap;}
+.gs-push-banner span:first-child{font-size:18px;flex-shrink:0;}
+.gs-push-banner span:nth-child(2){flex:1;line-height:1.5;}
+.gs-push-banner-btn{padding:5px 13px;border-radius:8px;border:1px solid rgba(99,102,241,0.4);background:rgba(99,102,241,0.15);color:#818cf8;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;flex-shrink:0;white-space:nowrap;}
+.gs-push-banner-btn:hover:not(:disabled){background:rgba(99,102,241,0.28);}
+.gs-push-banner-btn:disabled{opacity:0.4;cursor:not-allowed;}
+
 .gs-signin-wrap{display:flex;align-items:center;justify-content:center;min-height:100%;padding:24px;}
 .gs-signin-card{width:100%;max-width:360px;display:flex;flex-direction:column;gap:12px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.08);border-radius:20px;padding:28px 24px;}
 .gs-signin-icon{font-size:36px;text-align:center;line-height:1;}
@@ -1418,7 +1550,6 @@ const GS_CSS = `
 .gs-btn--ghost{background:transparent;border:1px solid rgba(255,255,255,0.12);color:rgba(255,255,255,0.5);}.gs-btn--ghost:hover{background:rgba(255,255,255,0.06);color:#fff;}
 .gs-btn--ghost.gs-btn--active{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.35);color:#f59e0b;}
 .gs-btn--danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;}.gs-btn--danger:hover{transform:translateY(-1px);}
-.gs-notif-btn{background:rgba(245,158,11,0.1);border:1px solid rgba(245,158,11,0.3);border-radius:20px;padding:7px 10px;font-size:14px;cursor:pointer;transition:all 0.15s;}.gs-notif-btn:hover{background:rgba(245,158,11,0.2);}
 .gs-loading{display:flex;align-items:center;justify-content:center;gap:10px;padding:32px;color:rgba(255,255,255,0.4);font-size:13px;}
 .gs-spinner{width:18px;height:18px;border:2px solid rgba(255,255,255,0.1);border-top-color:rgba(245,158,11,0.8);border-radius:50%;animation:gs-spin 0.7s linear infinite;}
 @keyframes gs-spin{to{transform:rotate(360deg)}}
@@ -1529,6 +1660,6 @@ const GS_CSS = `
   .gs-detail-header{flex-direction:column;}.gs-detail-actions{width:100%;justify-content:flex-end;}
   .gs-header-actions{width:100%;}.gs-form-row{flex-direction:column;}
   .gs-cmp-top{flex-direction:column;text-align:center;}.gs-cmp-arrow{transform:rotate(90deg);}
-  .gs-filters-row{gap:5px;}
+  .gs-filters-row{gap:5px;}.gs-push-banner{gap:7px;}
 }
 `;
