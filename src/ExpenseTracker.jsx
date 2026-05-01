@@ -2,7 +2,7 @@
 // Route: <Route path="/expenses" element={<ExpenseTracker />} />
 
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
-import GroupSplits from "./GroupSplits";
+import GroupSplits from "./Groupsplits";
 
 // ── Storage Keys ───────────────────────────────────────────────────────────────
 const STORAGE_KEY     = "qnaai_expenses_v3";
