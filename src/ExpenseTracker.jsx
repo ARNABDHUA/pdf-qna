@@ -2351,7 +2351,53 @@ const handleCloudSuccess = useCallback((result) => {
           {tab==="groups"&&(
             <GroupSplits
               credentials={cloudCredentials}
-              onSignIn={(creds) => setCloudCredentials(creds)}
+              onSignIn={(creds) => {
+                // Save credentials
+                setCloudCredentials({ username: creds.username, password: creds.password });
+
+                // Auto-restore expenses + budget from sync result
+                if (creds.syncResult) {
+                  const { expenses: syncExp, budget: syncBudget, has_budget, count } = creds.syncResult;
+
+                  // Merge expenses
+                  if (syncExp && syncExp.length > 0) {
+                    setExpenses(prev => {
+                      const m = Object.fromEntries(prev.map(e => [e.id, e]));
+                      for (const e of syncExp) m[e.id] = e;
+                      return Object.values(m).sort((a, b) => b.timestamp - a.timestamp);
+                    });
+                  }
+
+                  // Restore budget/accounts
+                  if (has_budget && syncBudget) {
+                    const curMonth = (() => {
+                      const ist = new Date(Date.now() + 5.5 * 3600000);
+                      return `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, "0")}`;
+                    })();
+                    setBudget(prev => {
+                      const mergedMonths = { ...(syncBudget.months || {}) };
+                      if (!mergedMonths[curMonth] && syncBudget.accounts?.length > 0) {
+                        mergedMonths[curMonth] = {
+                          accounts: syncBudget.accounts.map(acc => ({
+                            id: acc.id,
+                            currentBalance: acc.currentBalance,
+                            carryover: 0,
+                          })),
+                          transfers: [],
+                        };
+                      }
+                      return { ...syncBudget, months: mergedMonths };
+                    });
+                    const accCount = syncBudget.accounts?.length || 0;
+                    showToast(
+                      `✅ Signed in · synced ${count} expenses${accCount ? ` + ${accCount} account${accCount !== 1 ? "s" : ""}` : ""}`,
+                      "success"
+                    );
+                  } else {
+                    showToast(`✅ Signed in · synced ${count} expenses`, "success");
+                  }
+                }
+              }}
               onRecordTransaction={({ amount, category, description, reason, type, accountId, accountName }) => {
                 const newEntry = {
                   id: uid(),
@@ -2368,15 +2414,15 @@ const handleCloudSuccess = useCallback((result) => {
                 };
                 setExpenses(prev => [newEntry, ...prev].sort((a, b) => b.timestamp - a.timestamp));
                 // Also deduct from account if expense
-               if (accountId && budget.accounts.length > 0) {
-                    applyAccountAction({
-                      accountId,
-                      accountName,
-                      delta: type === "income" ? amount : -amount,
-                      account_not_found: false,
-                      account_type_missing: "",
-                    });
-                  }
+                if (accountId && budget.accounts.length > 0) {
+                  applyAccountAction({
+                    accountId,
+                    accountName,
+                    delta: type === "income" ? amount : -amount,
+                    account_not_found: false,
+                    account_type_missing: "",
+                  });
+                }
               }}
               budget={budget}
               showToast={showToast}

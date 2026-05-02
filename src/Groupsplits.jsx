@@ -139,6 +139,7 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
   const [addMemberModal, setAddMemberModal] = useState(false);
   const [removeModal,    setRemoveModal]    = useState(null);
   const [settleAllModal, setSettleAllModal] = useState(null);
+  const [leaveModal,    setLeaveModal]    = useState(false);
 
   // Refs
   const wsRef              = useRef({});
@@ -619,6 +620,8 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
                     {activeGroup.admin === username && (
                       <button className="gs-btn gs-btn--ghost" onClick={() => setAddMemberModal(true)}>+ Member</button>
                     )}
+                    {/* Leave group — shown to all  members */}
+                    <button className="gs-btn gs-btn--leave" onClick={() => setLeaveModal(true)}>🚪 Leave</button>
                     <button className="gs-btn gs-btn--primary" onClick={() => setAddExpModal(true)}>+ Expense</button>
                   </div>
                 </div>
@@ -825,6 +828,49 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
                       onClick={() => handleSettleAll(settleAllModal.name, settleAllModal.amount)}
                     >
                       ✓ Settle All {fmt(settleAllModal.amount)}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {leaveModal && activeGroup && (
+              <div className="et-modal-overlay" onClick={() => setLeaveModal(false)}>
+                <div className="et-modal" onClick={e => e.stopPropagation()}>
+                  <div className="et-modal-icon">🚪</div>
+                  <h3>Leave Group?</h3>
+                  <p>
+                    You will be removed from <strong style={{ color: "#f59e0b" }}>{activeGroup.name}</strong>.
+                    <br /><br />
+                    {activeGroup.admin === username ? (
+                      activeGroup.members?.length > 1
+                        ? <>You are the <strong style={{ color: "#f59e0b" }}>admin</strong>. Admin will be transferred to <strong style={{ color: "#818cf8" }}>{activeGroup.members.find(m => m !== username)}</strong> automatically.</>
+                        : <>You are the only member. Leaving will <strong style={{ color: "#ef4444" }}>permanently delete</strong> this group and all its expenses.</>
+                    ) : (
+                      <>Your past expenses will remain. You can rejoin using an invite link.</>
+                    )}
+                  </p>
+                  <div className="et-modal-actions">
+                    <button className="et-modal-cancel" onClick={() => setLeaveModal(false)}>Cancel</button>
+                    <button
+                      className="et-modal-confirm"
+                      style={{ background: "linear-gradient(135deg,#ef4444,#dc2626)" }}
+                      onClick={async () => {
+                        try {
+                          await apiCall(`/${activeGroup.group_id}/leave`, { username, password });
+                          setLeaveModal(false);
+                          setView("list");
+                          setActiveGroup(null);
+                          setGroupExpenses([]);
+                          loadGroups();
+                          localToast(`✅ Left "${activeGroup.name}"`, "success");
+                        } catch (e) {
+                          localToast("⚠️ " + e.message, "error");
+                          setLeaveModal(false);
+                        }
+                      }}
+                    >
+                      🚪 Leave Group
                     </button>
                   </div>
                 </div>
@@ -1425,6 +1471,22 @@ function GroupSignIn({ onSignIn, showToast }) {
     finally { setLoading(false); }
   };
 
+  // const handleSignIn = async () => {
+  //   if (password.length < 4) { setErr("Min 4 characters."); return; }
+  //   setErr(""); setLoading(true);
+  //   try {
+  //     const res = await fetch(`${API_BASE_LOCAL}/expenses/sync`, {
+  //       method: "POST", headers: { "Content-Type": "application/json" },
+  //       body: JSON.stringify({ username: username.trim().toLowerCase(), password }),
+  //     });
+  //     const d = await res.json();
+  //     if (!res.ok) throw new Error(d.detail || "Invalid credentials.");
+  //     if (onSignIn) onSignIn({ username: username.trim().toLowerCase(), password });
+  //     if (showToast) showToast(`✅ Signed in as @${username.trim().toLowerCase()}`, "success");
+  //   } catch (e) { setErr(e.message); }
+  //   finally { setLoading(false); }
+  // };
+
   const handleSignIn = async () => {
     if (password.length < 4) { setErr("Min 4 characters."); return; }
     setErr(""); setLoading(true);
@@ -1435,12 +1497,22 @@ function GroupSignIn({ onSignIn, showToast }) {
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Invalid credentials.");
-      if (onSignIn) onSignIn({ username: username.trim().toLowerCase(), password });
-      if (showToast) showToast(`✅ Signed in as @${username.trim().toLowerCase()}`, "success");
+      if (onSignIn) onSignIn({
+        username: username.trim().toLowerCase(),
+        password,
+        syncResult: {
+          expenses:   d.expenses   || [],
+          count:      d.count      || 0,
+          budget:     d.budget     || null,
+          has_budget: d.has_budget || false,
+        },
+      });
+      // Toast removed here — parent (ExpenseTracker) now shows it
+      // with full info: "✅ Signed in · synced N expenses + M accounts"
     } catch (e) { setErr(e.message); }
     finally { setLoading(false); }
   };
-
+  
   const hk = (e, fn) => { if (e.key === "Enter") fn(); };
 
   return (
@@ -1558,6 +1630,7 @@ const GS_CSS = `
 .gs-btn--ghost{background:transparent;border:1px solid rgba(255,255,255,0.12);color:rgba(255,255,255,0.5);}.gs-btn--ghost:hover{background:rgba(255,255,255,0.06);color:#fff;}
 .gs-btn--ghost.gs-btn--active{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.35);color:#f59e0b;}
 .gs-btn--danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;}.gs-btn--danger:hover{transform:translateY(-1px);}
+.gs-btn--leave{background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.28);color:#f87171;}.gs-btn--leave:hover{background:rgba(239,68,68,0.18);color:#ef4444;transform:translateY(-1px);}
 .gs-loading{display:flex;align-items:center;justify-content:center;gap:10px;padding:32px;color:rgba(255,255,255,0.4);font-size:13px;}
 .gs-spinner{width:18px;height:18px;border:2px solid rgba(255,255,255,0.1);border-top-color:rgba(245,158,11,0.8);border-radius:50%;animation:gs-spin 0.7s linear infinite;}
 @keyframes gs-spin{to{transform:rotate(360deg)}}
