@@ -182,7 +182,10 @@ function buildExpenseSummary(expenses, accounts) {
 function buildSystemPrompt(categories, accounts, defaultAccountId, expenses) {
   const ist = getISTContext();
   const defaultAcc = accounts.find(a => a.id === defaultAccountId);
-  const accountList = accounts.map(a => `  - name:"${a.name}", id:"${a.id}", type:"${a.type}", currentBalance:${a.currentBalance}`).join("\n") || "  (none)";
+  // const accountList = accounts.map(a => `  - name:"${a.name}", id:"${a.id}", type:"${a.type}", currentBalance:${a.currentBalance}`).join("\n") || "  (none)";
+  const accountList = accounts.map(a => 
+  `  - name:"${a.name}", id:"${a.id}", type:"${a.type}", currentBalance:${a.currentBalance}${a.id === defaultAccountId ? ' [CURRENT DEFAULT]' : ''}`
+).join("\n") || "  (none)";
   const hasAccounts = accounts.length > 0;
   const expenseSummary = buildExpenseSummary(expenses, accounts);
 
@@ -253,6 +256,22 @@ ANALYSIS RESPONSE RULES (when user asks a question about their spending or accou
 - Compare periods if asked ("last month vs this month")
 - Do NOT emit any JSON block for analysis questions — just respond with helpful formatted text
 - Use bold for key numbers, bullet points for lists
+
+ACCOUNT UI COMMANDS (when user asks to change default account OR create a new account):
+
+When user says "make X default" / "set X as default" / "change default to X":
+Find the account in BUDGET ACCOUNTS list above, then respond with:
+<account_ui_action>{"action":"set_default","accountId":"<id from accounts list>","accountName":"<name>"}</account_ui_action>
+Then also explain what changed in plain text.
+
+When user says "create account X with Y" / "add account X balance Y" / "new account X":
+FIRST check if an account with that name already exists in BUDGET ACCOUNTS above.
+- If account ALREADY EXISTS: respond with:
+<account_ui_action>{"action":"topup_account","accountId":"<existing id>","accountName":"<existing name>","topupAmount":<amount>}</account_ui_action>
+  Then explain: "Account already exists — added ₹<amount> to existing <name> account."
+- If account does NOT exist: respond with:
+<account_ui_action>{"action":"create_account","name":"<account name>","type":"<bank|wallet|cash|card|other>","currentBalance":<amount>,"color":"<pick from: #3b82f6 #f59e0b #22c55e #a855f7 #ef4444>"}</account_ui_action>
+  Then explain in plain text. DO NOT emit expense_data for the initial balance — the UI will handle it.
 
 ${hasAccounts ? `On normal expense/income respond with:
 <expense_data>{"amount":<n>,"category":"<one of: ${categories.join(", ")}>","description":"<max 60 chars>","reason":"<max 80 chars or empty>","type":"expense|income","timestamp":<unix_ms>,"account_action":{"accountId":"<id or empty>","accountName":"<name>","delta":<negative for expense, positive for income>,"account_not_found":<true|false>,"account_type_missing":"<wallet|cash|bank|empty>"}}</expense_data>` : `On normal expense/income respond with:
@@ -1564,15 +1583,40 @@ const handleCloudSuccess = useCallback((result) => {
       return Object.values(m).sort((a, b) => b.timestamp - a.timestamp);
     });
     if (result.has_budget && result.budget) {
-      setBudget(result.budget);
-      const accCount = result.budget?.accounts?.length || 0;
-      showToast(
-        `🔄 Synced ${result.count} expenses${accCount ? ` + ${accCount} account${accCount !== 1 ? "s" : ""}` : ""} from cloud.`,
-        "success",
-      );
-    } else {
-      showToast(`🔄 Synced ${result.count} expenses from cloud.`, "success");
-    }
+          const cloudBudget = result.budget;
+          // Ensure months structure exists so AccountsTab renders correctly
+          const curMonth = (() => {
+            const ist = new Date(Date.now() + 5.5 * 3600000);
+            return `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, "0")}`;
+          })();
+
+          setBudget(prev => {
+            const mergedMonths = { ...(cloudBudget.months || {}) };
+            // If current month missing from cloud, build it from account balances
+            if (!mergedMonths[curMonth] && cloudBudget.accounts?.length > 0) {
+              mergedMonths[curMonth] = {
+                accounts: cloudBudget.accounts.map(acc => ({
+                  id: acc.id,
+                  currentBalance: acc.currentBalance,
+                  carryover: 0,
+                })),
+                transfers: [],
+              };
+            }
+            return {
+              ...cloudBudget,
+              months: mergedMonths,
+            };
+          });
+
+          const accCount = cloudBudget?.accounts?.length || 0;
+          showToast(
+            `🔄 Synced ${result.count} expenses${accCount ? ` + ${accCount} account${accCount !== 1 ? "s" : ""}` : ""} from cloud.`,
+            "success",
+          );
+        } else {
+          showToast(`🔄 Synced ${result.count} expenses from cloud.`, "success");
+        }
   }
   // ← NEW: capture credentials for GroupSplits
   if (result.username && result.password) {
@@ -1784,11 +1828,150 @@ const handleCloudSuccess = useCallback((result) => {
         }
       }catch{} }
 
+    
+
+      const uam = aiText.match(/<account_ui_action>([\s\S]*?)<\/account_ui_action>/);
+      if (uam) {
+        try {
+          const p = JSON.parse(uam[1]);
+
+          if (p.action === "set_default" && p.accountId) {
+            setBudget(prev => {
+              const exists = prev.accounts.find(a => a.id === p.accountId);
+              if (!exists) return prev;
+              return { ...prev, defaultAccountId: p.accountId };
+            });
+          }
+
+          if (p.action === "topup_account" && p.accountId && p.topupAmount > 0) {
+            // Add money to existing account
+            const topupAmt = Number(p.topupAmount);
+            const curMonth = currentMonthKey();
+            setBudget(prev => {
+              const accExists = prev.accounts.find(a => a.id === p.accountId);
+              if (!accExists) return prev;
+              const updAccounts = prev.accounts.map(a =>
+                a.id === p.accountId ? { ...a, currentBalance: a.currentBalance + topupAmt } : a
+              );
+              const m = prev.months[curMonth] || { accounts: [], transfers: [] };
+              const monthAccExists = m.accounts.find(a => a.id === p.accountId);
+              const newMonthAccounts = monthAccExists
+                ? m.accounts.map(a => a.id === p.accountId ? { ...a, currentBalance: a.currentBalance + topupAmt } : a)
+                : [...m.accounts, { id: p.accountId, currentBalance: accExists.currentBalance + topupAmt, carryover: 0 }];
+              return {
+                ...prev,
+                accounts: updAccounts,
+                months: { ...prev.months, [curMonth]: { ...m, accounts: newMonthAccounts } },
+              };
+            });
+            // Log as income
+            handleRecordAccountTransaction({
+              amount: topupAmt,
+              category: "Salary",
+              description: `${p.accountName} — topped up`,
+              reason: `Added to existing account`,
+              type: "income",
+              accountId: p.accountId,
+              accountName: p.accountName,
+            });
+          }
+
+          if (p.action === "create_account" && p.name) {
+            const newBal = Number(p.currentBalance) || 0;
+            const curMonth = currentMonthKey();
+
+            setBudget(prev => {
+              // ── GUARD: check if account with same name already exists (case-insensitive) ──
+              const duplicate = prev.accounts.find(
+                a => a.name.toLowerCase().trim() === p.name.toLowerCase().trim()
+              );
+              if (duplicate) {
+                // Don't create — top up the existing one instead
+                if (newBal > 0) {
+                  const updAccounts = prev.accounts.map(a =>
+                    a.id === duplicate.id ? { ...a, currentBalance: a.currentBalance + newBal } : a
+                  );
+                  const m = prev.months[curMonth] || { accounts: [], transfers: [] };
+                  const monthAccExists = m.accounts.find(a => a.id === duplicate.id);
+                  const newMonthAccounts = monthAccExists
+                    ? m.accounts.map(a => a.id === duplicate.id ? { ...a, currentBalance: a.currentBalance + newBal } : a)
+                    : [...m.accounts, { id: duplicate.id, currentBalance: duplicate.currentBalance + newBal, carryover: 0 }];
+                  // Log as income with a timeout so setBudget doesn't conflict
+                  setTimeout(() => {
+                    handleRecordAccountTransaction({
+                      amount: newBal,
+                      category: "Salary",
+                      description: `${duplicate.name} — topped up (duplicate prevented)`,
+                      reason: `Account already existed`,
+                      type: "income",
+                      accountId: duplicate.id,
+                      accountName: duplicate.name,
+                    });
+                  }, 0);
+                  return {
+                    ...prev,
+                    accounts: updAccounts,
+                    months: { ...prev.months, [curMonth]: { ...m, accounts: newMonthAccounts } },
+                  };
+                }
+                return prev; // same name, zero balance — do nothing
+              }
+
+              // No duplicate — create fresh
+              const newAccId = uid();
+              const newAcc = {
+                id: newAccId,
+                name: p.name,
+                type: p.type || "bank",
+                currentBalance: newBal,
+                color: p.color || "#3b82f6",
+              };
+              const updAccounts = [...prev.accounts, newAcc];
+              const newDefault = prev.accounts.length === 0 ? newAccId : prev.defaultAccountId;
+              const m = prev.months[curMonth] || { accounts: [], transfers: [] };
+
+              if (newBal > 0) {
+                setTimeout(() => {
+                  handleRecordAccountTransaction({
+                    amount: newBal,
+                    category: "Salary",
+                    description: `${p.name} — initial balance`,
+                    reason: `Account added: ${p.name} (${p.type || "bank"})`,
+                    type: "income",
+                    accountId: newAccId,
+                    accountName: p.name,
+                  });
+                }, 0);
+              }
+
+              return {
+                ...prev,
+                accounts: updAccounts,
+                defaultAccountId: newDefault,
+                months: {
+                  ...prev.months,
+                  [curMonth]: {
+                    ...m,
+                    accounts: [
+                      ...m.accounts,
+                      { id: newAccId, currentBalance: newBal, carryover: 0 },
+                    ],
+                  },
+                },
+              };
+            });
+          }
+        } catch (e) {
+          console.warn("account_ui_action parse error", e);
+        }
+}
+
       const displayText=(aiText
         .replace(/<expense_data>[\s\S]*?<\/expense_data>/g,"")
         .replace(/<loan_data>[\s\S]*?<\/loan_data>/g,"")
         .replace(/<loan_repayment>[\s\S]*?<\/loan_repayment>/g,"")
         .replace(/<transfer_request>[\s\S]*?<\/transfer_request>/g,"")
+        .replace(/<account_ui_action>[\s\S]*?<\/account_ui_action>/g,"")  // ← ADD THIS
         .trim()) + accountMsg;
 
       return { displayText, newExpense, newLoan };
@@ -2187,8 +2370,8 @@ const handleCloudSuccess = useCallback((result) => {
       </div>
 
       {catModalOpen&&<CategoryModal customCats={categories} catIcons={catIcons} catColors={catColors} onClose={()=>setCatModalOpen(false)} onSave={handleSaveCats}/>}
-      {cloudModal&&<CloudModal mode={cloudModal} expenses={expenses} onClose={()=>setCloudModal(null)} onSuccess={handleCloudSuccess}/>}
-
+      {/* {cloudModal&&<CloudModal mode={cloudModal} expenses={expenses} onClose={()=>setCloudModal(null)} onSuccess={handleCloudSuccess}/>} */}
+          {cloudModal&&<CloudModal mode={cloudModal} expenses={expenses} budget={budget} onClose={()=>setCloudModal(null)} onSuccess={handleCloudSuccess}/>}
       {deleteCfm&&(
         <div className="et-modal-overlay" onClick={()=>setDeleteCfm(null)}>
           <div className="et-modal" onClick={e=>e.stopPropagation()}>
