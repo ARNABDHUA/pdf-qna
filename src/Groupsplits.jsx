@@ -395,9 +395,12 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     let youOwe = 0, othersOwe = 0, settledTotal = 0;
     for (const e of groupExpenses) {
       for (const s of e.splits || []) {
+        // You owe: your unsettled share in others' expenses
         if (s.username === username && e.paid_by !== username && !s.paid) youOwe += s.share;
+        // Others owe you: unsettled shares in YOUR expenses
         if (e.paid_by === username && s.username !== username && !s.paid) othersOwe += s.share;
-        if (s.paid) settledTotal += s.share;
+        // Settled: only settlements relevant to YOU
+        if (s.paid && (s.username === username || e.paid_by === username)) settledTotal += s.share;
       }
     }
     return {
@@ -407,20 +410,76 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     };
   }, [groupExpenses, activeGroup, username]);
 
-  const personOwes = useMemo(() => {
-    if (!activeGroup) return {};
-    const map = {};
-    for (const e of groupExpenses) {
-      for (const s of e.splits || []) {
-        if (!map[s.username]) map[s.username] = { owes: 0, paid: 0 };
-        if (s.username !== e.paid_by) {
-          if (s.paid) map[s.username].paid += s.share;
-          else        map[s.username].owes += s.share;
-        }
+  // const personOwes = useMemo(() => {
+  //   if (!activeGroup) return {};
+  //   const map = {};
+  //   for (const e of groupExpenses) {
+  //     // Only count expenses WHERE THE CURRENT USER paid
+  //     if (e.paid_by !== username) continue;
+  //     for (const s of e.splits || []) {
+  //       // Skip the current user's own share
+  //       if (s.username === username) continue;
+  //       if (!map[s.username]) map[s.username] = { owes: 0, paid: 0 };
+  //       if (s.paid) map[s.username].paid += s.share;
+  //       else        map[s.username].owes += s.share;
+  //     }
+  //   }
+  //   return map;
+  // }, [groupExpenses, activeGroup, username]);
+
+  // ADD this new useMemo after personOwes
+  // const youOweMap = useMemo(() => {
+  //   if (!activeGroup) return {};
+  //   const map = {};
+  //   for (const e of groupExpenses) {
+  //     // Only expenses paid by someone else
+  //     if (e.paid_by === username) continue;
+  //     for (const s of e.splits || []) {
+  //       // Only my unsettled share
+  //       if (s.username !== username || s.paid) continue;
+  //       if (!map[e.paid_by]) map[e.paid_by] = 0;
+  //       map[e.paid_by] += s.share;
+  //     }
+  //   }
+  //   // Round values
+  //   return Object.fromEntries(Object.entries(map).map(([k, v]) => [k, Math.round(v * 100) / 100]));
+  // }, [groupExpenses, activeGroup, username]);
+
+
+const netBalances = useMemo(() => {
+  if (!activeGroup) return {};
+  const map = {};
+
+  for (const e of groupExpenses) {
+    for (const s of e.splits || []) {
+      const paidBy = e.paid_by;
+
+      // Others owe you (you paid, they haven't settled)
+      if (paidBy === username && s.username !== username && !s.paid) {
+        if (!map[s.username]) map[s.username] = { youGet: 0, youOwe: 0 };
+        map[s.username].youGet += s.share;
+      }
+
+      // You owe others (they paid, you haven't settled)
+      if (paidBy !== username && s.username === username && !s.paid) {
+        if (!map[paidBy]) map[paidBy] = { youGet: 0, youOwe: 0 };
+        map[paidBy].youOwe += s.share;
       }
     }
-    return map;
-  }, [groupExpenses, activeGroup]);
+  }
+
+  // Net it out
+  const result = {};
+  for (const [person, { youGet, youOwe }] of Object.entries(map)) {
+    const net = Math.round((youGet - youOwe) * 100) / 100;
+    result[person] = {
+      net,           // positive = they owe you, negative = you owe them
+      youGet: Math.round(youGet * 100) / 100,
+      youOwe: Math.round(youOwe * 100) / 100,
+    };
+  }
+  return result;
+}, [groupExpenses, activeGroup, username]);
 
   const comparePeriods = useMemo(() => {
     if (!compareMode || allPeriods.length < 2) return null;
@@ -663,7 +722,7 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
 
                 {/* Per-person balance */}
                 <PersonBalances
-                  personOwes={personOwes}
+                  netBalances={netBalances}
                   username={username}
                   members={activeGroup.members || []}
                   onSettleAll={(memberName, amount) => setSettleAllModal({ name: memberName, amount })}
@@ -917,41 +976,164 @@ function GroupCard({ group, username, onOpen }) {
   );
 }
 
-function PersonBalances({ personOwes, username, members, onSettleAll }) {
-  const others = Object.entries(personOwes).filter(([u]) => u !== username);
-  if (others.length === 0) return null;
+// function PersonBalances({ personOwes, youOweMap, username, members, onSettleAll }) {
+//   const others = Object.entries(personOwes).filter(([u]) => u !== username);
+//   const youOweEntries = Object.entries(youOweMap).filter(([, amt]) => amt > 0);
+
+//   if (others.length === 0 && youOweEntries.length === 0) return null;
+
+//   return (
+//     <div className="gs-person-balances">
+
+//       {/* ── Who Owes You ── */}
+//       {others.length > 0 && (
+//         <>
+//           <p className="gs-subsection-label">💰 Who Owes You</p>
+//           <div className="gs-person-grid">
+//             {others.map(([u, data]) => {
+//               const unsettledDue = Math.round(data.owes * 100) / 100;
+//               const settledAmt   = Math.round(data.paid * 100) / 100;
+//               const isPaid       = unsettledDue <= 0;
+//               return (
+//                 <div key={u} className={`gs-person-card ${isPaid ? "gs-person-card--clear" : ""}`}>
+//                   <span className="gs-person-avatar">{u[0].toUpperCase()}</span>
+//                   <div className="gs-person-info">
+//                     <span className="gs-person-name">{u}</span>
+//                     <span className="gs-person-detail">Unsettled: {fmt(unsettledDue)} · Settled: {fmt(settledAmt)}</span>
+//                   </div>
+//                   <div className="gs-person-right">
+//                     <span className={`gs-person-net ${!isPaid ? "gs-person-net--due" : "gs-person-net--clear"}`}>
+//                       {isPaid ? "✓ Cleared" : fmt(unsettledDue) + " due"}
+//                     </span>
+//                     <button
+//                       className={`gs-settle-all-btn ${isPaid ? "gs-settle-all-btn--done" : ""}`}
+//                       onClick={() => !isPaid && onSettleAll && onSettleAll(u, unsettledDue)}
+//                       disabled={isPaid}
+//                       title={isPaid ? "Nothing to settle" : `Settle ${fmt(unsettledDue)}`}
+//                     >
+//                       {isPaid ? "✓ Settled" : "✓ Settle All"}
+//                     </button>
+//                   </div>
+//                 </div>
+//               );
+//             })}
+//           </div>
+//         </>
+//       )}
+
+//       {/* ── You Owe ── */}
+//       {youOweEntries.length > 0 && (
+//         <>
+//           <p className="gs-subsection-label" style={{ marginTop: others.length > 0 ? 10 : 0 }}>
+//             🔴 You Owe
+//           </p>
+//           <div className="gs-person-grid">
+//             {youOweEntries.map(([paidBy, amt]) => (
+//               <div key={paidBy} className="gs-person-card gs-person-card--you-owe">
+//                 <span className="gs-person-avatar" style={{ background: "#ef444422", color: "#ef4444" }}>
+//                   {paidBy[0].toUpperCase()}
+//                 </span>
+//                 <div className="gs-person-info">
+//                   <span className="gs-person-name">{paidBy}</span>
+//                   <span className="gs-person-detail">You owe them · tap to pay</span>
+//                 </div>
+//                 <div className="gs-person-right">
+//                   <span className="gs-person-net gs-person-net--you-owe">{fmt(amt)}</span>
+//                   <span className="gs-you-owe-hint">ask them to mark paid</span>
+//                 </div>
+//               </div>
+//             ))}
+//           </div>
+//         </>
+//       )}
+
+//     </div>
+//   );
+// }
+
+function PersonBalances({ netBalances, username, members, onSettleAll }) {
+  const entries = Object.entries(netBalances).filter(([, d]) => d.net !== 0 || d.youGet > 0 || d.youOwe > 0);
+  if (entries.length === 0) return null;
+
+  const theyOweYou = entries.filter(([, d]) => d.net > 0);
+  const youOweThem = entries.filter(([, d]) => d.net < 0);
+  const settled    = entries.filter(([, d]) => d.net === 0 && (d.youGet > 0 || d.youOwe > 0));
+
   return (
     <div className="gs-person-balances">
-      <p className="gs-subsection-label">👥 Who Owes What</p>
-      <div className="gs-person-grid">
-        {others.map(([u, data]) => {
-          const unsettledDue = Math.round(data.owes * 100) / 100;
-          const settledAmt   = Math.round(data.paid * 100) / 100;
-          const isPaid       = unsettledDue <= 0;
-          return (
-            <div key={u} className={`gs-person-card ${isPaid ? "gs-person-card--clear" : ""}`}>
-              <span className="gs-person-avatar">{u[0].toUpperCase()}</span>
-              <div className="gs-person-info">
-                <span className="gs-person-name">{u}</span>
-                <span className="gs-person-detail">Unsettled: {fmt(unsettledDue)} · Settled: {fmt(settledAmt)}</span>
+
+      {theyOweYou.length > 0 && (
+        <>
+          <p className="gs-subsection-label">💰 Who Owes You (Net)</p>
+          <div className="gs-person-grid">
+            {theyOweYou.map(([person, data]) => (
+              <div key={person} className="gs-person-card">
+                <span className="gs-person-avatar">{person[0].toUpperCase()}</span>
+                <div className="gs-person-info">
+                  <span className="gs-person-name">{person}</span>
+                  <span className="gs-person-detail">
+                    They owe ₹{data.youGet} · You owe ₹{data.youOwe} · Net: +₹{data.net}
+                  </span>
+                </div>
+                <div className="gs-person-right">
+                  <span className="gs-person-net gs-person-net--due">{fmt(data.net)} due</span>
+                  <button
+                    className="gs-settle-all-btn"
+                    onClick={() => onSettleAll && onSettleAll(person, data.net)}
+                  >✓ Settle All</button>
+                </div>
               </div>
-              <div className="gs-person-right">
-                <span className={`gs-person-net ${!isPaid ? "gs-person-net--due" : "gs-person-net--clear"}`}>
-                  {isPaid ? "✓ Cleared" : fmt(unsettledDue) + " due"}
+            ))}
+          </div>
+        </>
+      )}
+
+      {youOweThem.length > 0 && (
+        <>
+          <p className="gs-subsection-label" style={{ marginTop: theyOweYou.length > 0 ? 10 : 0 }}>
+            🔴 You Owe (Net)
+          </p>
+          <div className="gs-person-grid">
+            {youOweThem.map(([person, data]) => (
+              <div key={person} className="gs-person-card gs-person-card--you-owe">
+                <span className="gs-person-avatar" style={{ background: "#ef444422", color: "#ef4444" }}>
+                  {person[0].toUpperCase()}
                 </span>
-                <button
-                  className={`gs-settle-all-btn ${isPaid ? "gs-settle-all-btn--done" : ""}`}
-                  onClick={() => !isPaid && onSettleAll && onSettleAll(u, unsettledDue)}
-                  disabled={isPaid}
-                  title={isPaid ? "Nothing to settle" : `Settle ${fmt(unsettledDue)}`}
-                >
-                  {isPaid ? "✓ Settled" : "✓ Settle All"}
-                </button>
+                <div className="gs-person-info">
+                  <span className="gs-person-name">{person}</span>
+                  <span className="gs-person-detail">
+                    They owe ₹{data.youGet} · You owe ₹{data.youOwe} · Net: -₹{Math.abs(data.net)}
+                  </span>
+                </div>
+                <div className="gs-person-right">
+                  <span className="gs-person-net gs-person-net--you-owe">{fmt(Math.abs(data.net))}</span>
+                  <span className="gs-you-owe-hint">ask them to mark paid</span>
+                </div>
               </div>
-            </div>
-          );
-        })}
-      </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {settled.length > 0 && (
+        <>
+          <p className="gs-subsection-label" style={{ marginTop: 10 }}>✅ All Settled</p>
+          <div className="gs-person-grid">
+            {settled.map(([person]) => (
+              <div key={person} className="gs-person-card gs-person-card--clear">
+                <span className="gs-person-avatar" style={{ background: "#22c55e22", color: "#22c55e" }}>
+                  {person[0].toUpperCase()}
+                </span>
+                <div className="gs-person-info">
+                  <span className="gs-person-name">{person}</span>
+                </div>
+                <span className="gs-person-net gs-person-net--clear">✓ Cleared</span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
     </div>
   );
 }
@@ -1512,7 +1694,7 @@ function GroupSignIn({ onSignIn, showToast }) {
     } catch (e) { setErr(e.message); }
     finally { setLoading(false); }
   };
-  
+
   const hk = (e, fn) => { if (e.key === "Enter") fn(); };
 
   return (
@@ -1678,6 +1860,9 @@ const GS_CSS = `
 .gs-person-grid{display:flex;flex-direction:column;gap:6px;}
 .gs-person-card{display:flex;align-items:center;gap:9px;padding:9px 12px;background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.15);border-radius:10px;}
 .gs-person-card--clear{background:rgba(34,197,94,0.06);border-color:rgba(34,197,94,0.15);}
+.gs-person-card--you-owe{background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.18);}
+.gs-person-net--you-owe{color:#ef4444;font-size:14px;font-weight:800;font-family:'JetBrains Mono',monospace;}
+.gs-you-owe-hint{font-size:9px;color:rgba(255,255,255,0.25);text-align:right;margin-top:2px;}
 .gs-person-avatar{width:32px;height:32px;border-radius:50%;background:rgba(245,158,11,0.15);color:#f59e0b;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;}
 .gs-person-info{flex:1;display:flex;flex-direction:column;gap:2px;}.gs-person-name{font-size:13px;font-weight:700;color:#fff;}.gs-person-detail{font-size:10px;color:rgba(255,255,255,0.35);font-family:'JetBrains Mono',monospace;}
 .gs-person-net{font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;}.gs-person-net--due{color:#f59e0b;}.gs-person-net--clear{color:#22c55e;}
