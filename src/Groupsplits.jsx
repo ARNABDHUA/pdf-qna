@@ -1336,8 +1336,11 @@ function AddExpenseModal({ username, password, group, onClose, onAdded }) {
 
           {splitMode === "equal" && amount && members.length > 0 && (
             <div className="gs-equal-preview">
-              <p className="gs-splits-label">Each person pays {fmt(equalShare)}</p>
-              <div className="gs-equal-members">
+              <div className="gs-splits-label-row">
+                <p className="gs-splits-label">Each person pays {fmt(equalShare)}</p>
+                <span className="gs-splits-count">{members.length} members</span>
+              </div>
+              <div className="gs-equal-members gs-equal-members--scroll">
                 {members.map(m => (
                   <div key={m} className="gs-equal-member">
                     <span className="gs-split-avatar" style={{ background: m === username ? "#f59e0b22" : "#6366f122", color: m === username ? "#f59e0b" : "#818cf8" }}>
@@ -1352,8 +1355,12 @@ function AddExpenseModal({ username, password, group, onClose, onAdded }) {
           )}
 
           {splitMode === "custom" && (
-            <div className="gs-custom-splits">
-              <p className="gs-splits-label">Custom splits — Total: {fmt(sharesTotal)} / {fmt(amount || 0)}</p>
+  <div className="gs-custom-splits">
+    <div className="gs-splits-label-row">
+      <p className="gs-splits-label">Custom splits</p>
+      <span className="gs-splits-count">{fmt(sharesTotal)} / {fmt(amount || 0)}</span>
+    </div>
+    <div className="gs-custom-members--scroll">
               {members.map(m => (
                 <div key={m} className="gs-custom-split-row">
                   <span className="gs-split-avatar" style={{ background: m === username ? "#f59e0b22" : "#6366f122", color: m === username ? "#f59e0b" : "#818cf8" }}>
@@ -1365,6 +1372,7 @@ function AddExpenseModal({ username, password, group, onClose, onAdded }) {
                     placeholder="₹0" />
                 </div>
               ))}
+               </div>
               {amount && Math.abs(sharesTotal - parseFloat(amount)) > 0.05 && (
                 <p style={{ fontSize: 10, color: "#f59e0b", marginTop: 4 }}>
                   Remaining: {fmt(Math.max(0, parseFloat(amount) - sharesTotal))}
@@ -1639,16 +1647,29 @@ const GS_CSS = `
 .gs-del-exp-btn{align-self:flex-start;padding:5px 11px;border-radius:8px;border:1px solid rgba(239,68,68,0.22);background:transparent;color:rgba(239,68,68,0.5);font-size:11px;cursor:pointer;font-family:inherit;transition:all 0.15s;margin-top:4px;}.gs-del-exp-btn:hover{background:rgba(239,68,68,0.1);color:#ef4444;}
 .gs-confirm-del{display:flex;align-items:center;gap:8px;padding:8px;background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:8px;font-size:12px;color:rgba(255,255,255,0.6);}
 .gs-modal{max-width:400px!important;text-align:left;}
-.gs-exp-modal{max-width:440px!important;}
+.gs-exp-modal{max-width:440px!important;max-height:90dvh;overflow-y:auto;}
+.gs-exp-modal::-webkit-scrollbar{width:3px;}
+.gs-exp-modal::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:4px;}
 .gs-exp-form{display:flex;flex-direction:column;gap:10px;}
 .gs-form-row{display:flex;gap:10px;}.gs-form-row .et-cloud-field{flex:1;}
 .gs-split-mode-toggle{display:flex;gap:6px;}
 .gs-split-mode-btn{flex:1;padding:7px;border-radius:9px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:rgba(255,255,255,0.4);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all 0.15s;text-align:center;}
 .gs-split-mode-btn--active{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.35);color:#f59e0b;}
 .gs-equal-preview{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:9px;padding:10px;display:flex;flex-direction:column;gap:7px;}
+.gs-splits-label-row{display:flex;align-items:center;justify-content:space-between;gap:8px;}
+.gs-splits-count{font-size:10px;font-weight:700;color:rgba(255,255,255,0.3);background:rgba(255,255,255,0.06);padding:2px 8px;border-radius:20px;white-space:nowrap;flex-shrink:0;}
 .gs-equal-members{display:flex;flex-direction:column;gap:5px;}
-.gs-equal-member{display:flex;align-items:center;gap:7px;font-size:12px;color:rgba(255,255,255,0.6);}
+.gs-equal-members--scroll{max-height:160px;overflow-y:auto;padding-right:4px;}
+.gs-equal-members--scroll::-webkit-scrollbar{width:3px;}
+.gs-equal-members--scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:4px;}
+.gs-equal-members--scroll::-webkit-scrollbar-track{background:transparent;}
+.gs-equal-member{display:flex;align-items:center;gap:7px;font-size:12px;color:rgba(255,255,255,0.6);padding:3px 2px;border-radius:6px;}
+.gs-equal-member:hover{background:rgba(255,255,255,0.03);}
 .gs-custom-splits{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:9px;padding:10px;display:flex;flex-direction:column;gap:6px;}
+.gs-custom-members--scroll{display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;padding-right:4px;}
+.gs-custom-members--scroll::-webkit-scrollbar{width:3px;}
+.gs-custom-members--scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:4px;}
+.gs-custom-members--scroll::-webkit-scrollbar-track{background:transparent;}
 .gs-custom-split-row{display:flex;align-items:center;gap:8px;}
 .gs-share-input{width:80px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:7px;padding:6px 9px;color:#fff;font-size:12px;font-family:monospace;outline:none;text-align:right;}
 .gs-share-input:focus{border-color:rgba(245,158,11,0.4);}
