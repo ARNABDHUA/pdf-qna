@@ -1544,27 +1544,37 @@ export default function ExpenseTracker() {
   }, []);
 
   const refundAccountForExpense = useCallback((expense) => {
-    if (!budget.accounts.length || !budget.defaultAccountId) return;
-    if (expense.type !== "expense") return;
-    const curMonth = currentMonthKey();
-    const refundAmt = expense.amount;
-    setBudget(prev => {
-      if (!prev.accounts.length || !prev.defaultAccountId) return prev;
-      const updAccounts = prev.accounts.map(a =>
-        a.id === prev.defaultAccountId ? { ...a, currentBalance: a.currentBalance + refundAmt } : a
-      );
-      const m = prev.months[curMonth] || { accounts: [], transfers: [] };
-      const monthAccExists = m.accounts.find(a => a.id === prev.defaultAccountId);
-      const newMonthAccounts = monthAccExists
-        ? m.accounts.map(a => a.id === prev.defaultAccountId ? { ...a, currentBalance: a.currentBalance + refundAmt } : a)
-        : m.accounts;
-      return {
-        ...prev,
-        accounts: updAccounts,
-        months: { ...prev.months, [curMonth]: { ...m, accounts: newMonthAccounts } }
-      };
-    });
-  }, [budget]);
+      if (!budget.accounts.length) return;
+      const curMonth = currentMonthKey();
+      
+      // Use the expense's own accountId first, fall back to defaultAccountId for expenses
+      const targetAccId = expense.accountId || 
+        (expense.type === "expense" ? budget.defaultAccountId : null);
+      
+      if (!targetAccId) return;
+      
+      // For expense deletion → refund (add back), for income deletion → deduct (subtract)
+      const delta = expense.type === "expense" ? expense.amount : -expense.amount;
+
+      setBudget(prev => {
+        const accExists = prev.accounts.find(a => a.id === targetAccId);
+        if (!accExists) return prev;
+
+        const updAccounts = prev.accounts.map(a =>
+          a.id === targetAccId ? { ...a, currentBalance: a.currentBalance + delta } : a
+        );
+        const m = prev.months[curMonth] || { accounts: [], transfers: [] };
+        const monthAccExists = m.accounts.find(a => a.id === targetAccId);
+        const newMonthAccounts = monthAccExists
+          ? m.accounts.map(a => a.id === targetAccId ? { ...a, currentBalance: a.currentBalance + delta } : a)
+          : m.accounts;
+        return {
+          ...prev,
+          accounts: updAccounts,
+          months: { ...prev.months, [curMonth]: { ...m, accounts: newMonthAccounts } }
+        };
+      });
+    }, [budget]);
 
   // const handleCloudSuccess = useCallback((result) => {
   //   setCloudModal(null);
@@ -2057,15 +2067,23 @@ const handleCloudSuccess = useCallback((result) => {
   const confirmDeleteMonth = (key) => setDeleteCfm({type:"month",key, label:key});
 
   const executeDelete = () => {
-    if (!deleteCfm) return;
-    if (deleteCfm.type === "item") {
-      const exp = expenses.find(e => e.id === deleteCfm.id);
-      if (exp && exp.type === "expense" && budget.accounts.length > 0 && budget.defaultAccountId) {
+  if (!deleteCfm) return;
+  if (deleteCfm.type === "item") {
+    const exp = expenses.find(e => e.id === deleteCfm.id);
+    if (exp && budget.accounts.length > 0) {
+      const targetAccId = exp.accountId || (exp.type === "expense" ? budget.defaultAccountId : null);
+      const targetAcc = budget.accounts.find(a => a.id === targetAccId);
+      if (targetAcc) {
         refundAccountForExpense(exp);
-        showToast(`↩ ${fmt(exp.amount)} refunded to ${budget.accounts.find(a=>a.id===budget.defaultAccountId)?.name}`, "success");
+        if (exp.type === "expense") {
+          showToast(`↩ ${fmt(exp.amount)} refunded to ${targetAcc.name}`, "success");
+        } else {
+          showToast(`↩ ${fmt(exp.amount)} deducted from ${targetAcc.name} (income removed)`, "info");
+        }
       }
-      setExpenses(p => p.filter(e => e.id !== deleteCfm.id));
     }
+    setExpenses(p => p.filter(e => e.id !== deleteCfm.id));
+  }
     if (deleteCfm.type === "day")   setExpenses(p => p.filter(e => isoDate(e.timestamp) !== deleteCfm.key));
     if (deleteCfm.type === "month") setExpenses(p => p.filter(e => monthKey(e.timestamp) !== deleteCfm.key));
     setDeleteCfm(null);
@@ -2378,7 +2396,17 @@ const handleCloudSuccess = useCallback((result) => {
             <div className="et-modal-icon">🗑️</div>
             <h3>{deleteCfm.type==="item"?"Delete this entry?":deleteCfm.type==="month"?"Delete month's records?":"Delete day's records?"}</h3>
             <p>{deleteCfm.type==="item"
-              ? <>{budget.accounts.length > 0 && budget.defaultAccountId ? <>Delete <strong>"{deleteCfm.label}"</strong>? Amount will be refunded to your default account.</> : <>Delete <strong>"{deleteCfm.label}"</strong>? Cannot be undone.</>}</>
+              ? (() => {
+                  const exp = expenses.find(e => e.id === deleteCfm.id);
+                  const targetAccId = exp?.accountId || (exp?.type === "expense" ? budget.defaultAccountId : null);
+                  const targetAcc = budget.accounts.find(a => a.id === targetAccId);
+                  if (targetAcc && exp) {
+                    return exp.type === "expense"
+                      ? <>Delete <strong>"{deleteCfm.label}"</strong>? {fmt(exp.amount)} will be refunded to <strong>{targetAcc.name}</strong>.</>
+                      : <>Delete <strong>"{deleteCfm.label}"</strong>? {fmt(exp.amount)} will be deducted from <strong>{targetAcc.name}</strong> (income reversal).</>;
+                  }
+                  return <>Delete <strong>"{deleteCfm.label}"</strong>? Cannot be undone.</>;
+                })()
               : <>Delete all entries for <strong>{deleteCfm.label}</strong>? Cannot be undone.</>
             }</p>
             <div className="et-modal-actions"><button className="et-modal-cancel" onClick={()=>setDeleteCfm(null)}>Cancel</button><button className="et-modal-confirm" onClick={executeDelete}>Delete</button></div>
