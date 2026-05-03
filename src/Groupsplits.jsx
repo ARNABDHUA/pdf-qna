@@ -80,7 +80,6 @@ async function subscribeToPush(username, password) {
       applicationServerKey: urlBase64ToUint8Array(vapidKey),
     });
 
-    // Send subscription to backend
     await apiCall("/push-subscribe", {
       username,
       password,
@@ -118,28 +117,29 @@ async function unsubscribeFromPush(username, password) {
 export default function GroupSplits({ credentials, onRecordTransaction, budget, showToast, onSignIn }) {
   const { username = "", password = "" } = credentials || {};
 
-  const [groups,         setGroups]         = useState([]);
-  const [activeGroup,    setActiveGroup]    = useState(null);
-  const [groupExpenses,  setGroupExpenses]  = useState([]);
-  const [loading,        setLoading]        = useState(false);
-  const [view,           setView]           = useState("list");
-  const [periodView,     setPeriodView]     = useState("month");
-  const [selectedPeriod, setSelectedPeriod] = useState("");
-  const [catFilter,      setCatFilter]      = useState("all");
-  const [compareMode,    setCompareMode]    = useState(false);
-  const [pushEnabled,    setPushEnabled]    = useState(false);
-  const [pushLoading,    setPushLoading]    = useState(false);
-  const [toast,          setToast]          = useState(null);
+  const [groups,          setGroups]          = useState([]);
+  const [activeGroup,     setActiveGroup]     = useState(null);
+  const [groupExpenses,   setGroupExpenses]   = useState([]);
+  const [loading,         setLoading]         = useState(false);
+  const [view,            setView]            = useState("list");
+  const [periodView,      setPeriodView]      = useState("month");
+  const [selectedPeriod,  setSelectedPeriod]  = useState("");
+  const [catFilter,       setCatFilter]       = useState("all");
+  const [compareMode,     setCompareMode]     = useState(false);
+  const [pushEnabled,     setPushEnabled]     = useState(false);
+  const [pushLoading,     setPushLoading]     = useState(false);
+  const [toast,           setToast]           = useState(null);
 
   // Modals
-  const [createModal,    setCreateModal]    = useState(false);
-  const [joinModal,      setJoinModal]      = useState(false);
-  const [addExpModal,    setAddExpModal]    = useState(false);
-  const [inviteModal,    setInviteModal]    = useState(false);
-  const [addMemberModal, setAddMemberModal] = useState(false);
-  const [removeModal,    setRemoveModal]    = useState(null);
-  const [settleAllModal, setSettleAllModal] = useState(null);
-  const [leaveModal,    setLeaveModal]    = useState(false);
+  const [createModal,     setCreateModal]     = useState(false);
+  const [joinModal,       setJoinModal]       = useState(false);
+  const [addExpModal,     setAddExpModal]     = useState(false);
+  const [inviteModal,     setInviteModal]     = useState(false);
+  const [addMemberModal,  setAddMemberModal]  = useState(false);
+  const [removeModal,     setRemoveModal]     = useState(null);
+  const [settleAllModal,  setSettleAllModal]  = useState(null);
+  const [leaveModal,      setLeaveModal]      = useState(false);
+  const [payAndSaveModal, setPayAndSaveModal] = useState(null); // NEW
 
   // Refs
   const wsRef              = useRef({});
@@ -195,7 +195,6 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
           ? prev
           : dedupExpenses([msg.expense, ...prev])
       );
-      // In-app toast only (push notification handles background case)
       if (msg.expense.paid_by !== username) {
         localToast(`🆕 ${msg.expense.paid_by} added ${fmt(msg.expense.amount)} — ${msg.expense.description}`, "info");
       }
@@ -295,8 +294,8 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
       ws.onopen = () => {
         clearTimeout(openTimeout);
         if (destroyed) { ws.close(); return; }
-        wsConnected         = true;
-        wsRef.current[gid]  = ws;
+        wsConnected          = true;
+        wsRef.current[gid]   = ws;
         wsRetry.current[gid] = 0;
         clearTimeout(retryTimeout);
         stopPolling();
@@ -395,11 +394,8 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     let youOwe = 0, othersOwe = 0, settledTotal = 0;
     for (const e of groupExpenses) {
       for (const s of e.splits || []) {
-        // You owe: your unsettled share in others' expenses
         if (s.username === username && e.paid_by !== username && !s.paid) youOwe += s.share;
-        // Others owe you: unsettled shares in YOUR expenses
         if (e.paid_by === username && s.username !== username && !s.paid) othersOwe += s.share;
-        // Settled: only settlements relevant to YOU
         if (s.paid && (s.username === username || e.paid_by === username)) settledTotal += s.share;
       }
     }
@@ -410,76 +406,37 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     };
   }, [groupExpenses, activeGroup, username]);
 
-  // const personOwes = useMemo(() => {
-  //   if (!activeGroup) return {};
-  //   const map = {};
-  //   for (const e of groupExpenses) {
-  //     // Only count expenses WHERE THE CURRENT USER paid
-  //     if (e.paid_by !== username) continue;
-  //     for (const s of e.splits || []) {
-  //       // Skip the current user's own share
-  //       if (s.username === username) continue;
-  //       if (!map[s.username]) map[s.username] = { owes: 0, paid: 0 };
-  //       if (s.paid) map[s.username].paid += s.share;
-  //       else        map[s.username].owes += s.share;
-  //     }
-  //   }
-  //   return map;
-  // }, [groupExpenses, activeGroup, username]);
+  const netBalances = useMemo(() => {
+    if (!activeGroup) return {};
+    const map = {};
 
-  // ADD this new useMemo after personOwes
-  // const youOweMap = useMemo(() => {
-  //   if (!activeGroup) return {};
-  //   const map = {};
-  //   for (const e of groupExpenses) {
-  //     // Only expenses paid by someone else
-  //     if (e.paid_by === username) continue;
-  //     for (const s of e.splits || []) {
-  //       // Only my unsettled share
-  //       if (s.username !== username || s.paid) continue;
-  //       if (!map[e.paid_by]) map[e.paid_by] = 0;
-  //       map[e.paid_by] += s.share;
-  //     }
-  //   }
-  //   // Round values
-  //   return Object.fromEntries(Object.entries(map).map(([k, v]) => [k, Math.round(v * 100) / 100]));
-  // }, [groupExpenses, activeGroup, username]);
+    for (const e of groupExpenses) {
+      for (const s of e.splits || []) {
+        const paidBy = e.paid_by;
 
+        if (paidBy === username && s.username !== username && !s.paid) {
+          if (!map[s.username]) map[s.username] = { youGet: 0, youOwe: 0 };
+          map[s.username].youGet += s.share;
+        }
 
-const netBalances = useMemo(() => {
-  if (!activeGroup) return {};
-  const map = {};
-
-  for (const e of groupExpenses) {
-    for (const s of e.splits || []) {
-      const paidBy = e.paid_by;
-
-      // Others owe you (you paid, they haven't settled)
-      if (paidBy === username && s.username !== username && !s.paid) {
-        if (!map[s.username]) map[s.username] = { youGet: 0, youOwe: 0 };
-        map[s.username].youGet += s.share;
-      }
-
-      // You owe others (they paid, you haven't settled)
-      if (paidBy !== username && s.username === username && !s.paid) {
-        if (!map[paidBy]) map[paidBy] = { youGet: 0, youOwe: 0 };
-        map[paidBy].youOwe += s.share;
+        if (paidBy !== username && s.username === username && !s.paid) {
+          if (!map[paidBy]) map[paidBy] = { youGet: 0, youOwe: 0 };
+          map[paidBy].youOwe += s.share;
+        }
       }
     }
-  }
 
-  // Net it out
-  const result = {};
-  for (const [person, { youGet, youOwe }] of Object.entries(map)) {
-    const net = Math.round((youGet - youOwe) * 100) / 100;
-    result[person] = {
-      net,           // positive = they owe you, negative = you owe them
-      youGet: Math.round(youGet * 100) / 100,
-      youOwe: Math.round(youOwe * 100) / 100,
-    };
-  }
-  return result;
-}, [groupExpenses, activeGroup, username]);
+    const result = {};
+    for (const [person, { youGet, youOwe }] of Object.entries(map)) {
+      const net = Math.round((youGet - youOwe) * 100) / 100;
+      result[person] = {
+        net,
+        youGet: Math.round(youGet * 100) / 100,
+        youOwe: Math.round(youOwe * 100) / 100,
+      };
+    }
+    return result;
+  }, [groupExpenses, activeGroup, username]);
 
   const comparePeriods = useMemo(() => {
     if (!compareMode || allPeriods.length < 2) return null;
@@ -529,9 +486,9 @@ const netBalances = useMemo(() => {
       await apiCall("/settle", {
         username,
         password,
-        group_id:              activeGroup.group_id,
-        expense_id:            expenseId,
-        settled_for_username:  forUsername,
+        group_id:             activeGroup.group_id,
+        expense_id:           expenseId,
+        settled_for_username: forUsername,
         amount,
       });
       setGroupExpenses(prev => prev.map(e => {
@@ -590,6 +547,27 @@ const netBalances = useMemo(() => {
     setSettleAllModal(null);
   }, [groupExpenses, username, handleSettleShare, onRecordTransaction, activeGroup, budget, localToast]);
 
+  // ── NEW: Pay & Save handler ────────────────────────────────────────────────
+  const handlePayAndSave = useCallback((personName, amount) => {
+    if (onRecordTransaction) {
+      onRecordTransaction({
+        amount,
+        category:    "Other",
+        description: `Paid ${personName} — group settlement`,
+        reason:      `Group: ${activeGroup?.name || "group"} — you paid your share`,
+        type:        "expense",
+        accountId:   budget?.defaultAccountId || null,
+        accountName: budget?.accounts?.find(a => a.id === budget?.defaultAccountId)?.name || null,
+      });
+    }
+    const accName = budget?.accounts?.find(a => a.id === budget?.defaultAccountId)?.name;
+    localToast(
+      `💾 ${fmt(amount)} paid to ${personName} · saved to Records${accName ? ` & deducted from ${accName}` : ""}`,
+      "success"
+    );
+    setPayAndSaveModal(null);
+  }, [onRecordTransaction, activeGroup, budget, localToast]);
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <>
@@ -608,12 +586,11 @@ const netBalances = useMemo(() => {
                     <p className="gs-section-sub">Signed in as <strong style={{ color: "#f59e0b" }}>@{username}</strong></p>
                   </div>
                   <div className="gs-header-actions">
-                    {/* Push notification toggle */}
                     <button
                       className={`gs-push-btn ${pushEnabled ? "gs-push-btn--on" : ""}`}
                       onClick={handleTogglePush}
                       disabled={pushLoading}
-                      title={pushEnabled ? "Disable push notifications" : "Enable push notifications (works outside browser)"}
+                      title={pushEnabled ? "Disable push notifications" : "Enable push notifications"}
                     >
                       {pushLoading ? "⏳" : pushEnabled ? "🔔 Push ON" : "🔕 Push OFF"}
                     </button>
@@ -622,7 +599,6 @@ const netBalances = useMemo(() => {
                   </div>
                 </div>
 
-                {/* Push info banner — shown only when push is off */}
                 {!pushEnabled && (
                   <div className="gs-push-banner">
                     <span>🔔</span>
@@ -679,7 +655,6 @@ const netBalances = useMemo(() => {
                     {activeGroup.admin === username && (
                       <button className="gs-btn gs-btn--ghost" onClick={() => setAddMemberModal(true)}>+ Member</button>
                     )}
-                    {/* Leave group — shown to all  members */}
                     <button className="gs-btn gs-btn--leave" onClick={() => setLeaveModal(true)}>🚪 Leave</button>
                     <button className="gs-btn gs-btn--primary" onClick={() => setAddExpModal(true)}>+ Expense</button>
                   </div>
@@ -720,12 +695,13 @@ const netBalances = useMemo(() => {
                   ))}
                 </div>
 
-                {/* Per-person balance */}
+                {/* Per-person balance with Pay & Save */}
                 <PersonBalances
                   netBalances={netBalances}
                   username={username}
                   members={activeGroup.members || []}
                   onSettleAll={(memberName, amount) => setSettleAllModal({ name: memberName, amount })}
+                  onPayAndSave={(personName, amount) => setPayAndSaveModal({ name: personName, amount })}
                 />
 
                 {/* Period + filters */}
@@ -893,6 +869,45 @@ const netBalances = useMemo(() => {
               </div>
             )}
 
+            {/* ── NEW: Pay & Save Modal ── */}
+            {payAndSaveModal && (
+              <div className="et-modal-overlay" onClick={() => setPayAndSaveModal(null)}>
+                <div className="et-modal" onClick={e => e.stopPropagation()}>
+                  <div className="et-modal-icon">💾</div>
+                  <h3>Pay &amp; Save</h3>
+                  <p>
+                    Record that you paid{" "}
+                    <strong style={{ color: "#ef4444" }}>{fmt(payAndSaveModal.amount)}</strong> to{" "}
+                    <strong style={{ color: "#f59e0b" }}>{payAndSaveModal.name}</strong>.
+                    <br /><br />
+                    This will be logged as an <strong>expense</strong> in your Records
+                    {budget?.defaultAccountId
+                      ? <>
+                          {" "}and{" "}
+                          <strong style={{ color: "#ef4444" }}>{fmt(payAndSaveModal.amount)}</strong>
+                          {" "}will be deducted from your{" "}
+                          <strong style={{ color: "#3b82f6" }}>
+                            {budget.accounts?.find(a => a.id === budget.defaultAccountId)?.name || "default"}
+                          </strong>
+                          {" "}account.
+                        </>
+                      : <>. Add an account in the 💳 Accounts tab to also auto-deduct from your balance.</>
+                    }
+                  </p>
+                  <div className="et-modal-actions">
+                    <button className="et-modal-cancel" onClick={() => setPayAndSaveModal(null)}>Cancel</button>
+                    <button
+                      className="et-modal-confirm"
+                      style={{ background: "linear-gradient(135deg,#ef4444,#dc2626)" }}
+                      onClick={() => handlePayAndSave(payAndSaveModal.name, payAndSaveModal.amount)}
+                    >
+                      💾 Confirm &amp; Save
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {leaveModal && activeGroup && (
               <div className="et-modal-overlay" onClick={() => setLeaveModal(false)}>
                 <div className="et-modal" onClick={e => e.stopPropagation()}>
@@ -976,83 +991,9 @@ function GroupCard({ group, username, onOpen }) {
   );
 }
 
-// function PersonBalances({ personOwes, youOweMap, username, members, onSettleAll }) {
-//   const others = Object.entries(personOwes).filter(([u]) => u !== username);
-//   const youOweEntries = Object.entries(youOweMap).filter(([, amt]) => amt > 0);
-
-//   if (others.length === 0 && youOweEntries.length === 0) return null;
-
-//   return (
-//     <div className="gs-person-balances">
-
-//       {/* ── Who Owes You ── */}
-//       {others.length > 0 && (
-//         <>
-//           <p className="gs-subsection-label">💰 Who Owes You</p>
-//           <div className="gs-person-grid">
-//             {others.map(([u, data]) => {
-//               const unsettledDue = Math.round(data.owes * 100) / 100;
-//               const settledAmt   = Math.round(data.paid * 100) / 100;
-//               const isPaid       = unsettledDue <= 0;
-//               return (
-//                 <div key={u} className={`gs-person-card ${isPaid ? "gs-person-card--clear" : ""}`}>
-//                   <span className="gs-person-avatar">{u[0].toUpperCase()}</span>
-//                   <div className="gs-person-info">
-//                     <span className="gs-person-name">{u}</span>
-//                     <span className="gs-person-detail">Unsettled: {fmt(unsettledDue)} · Settled: {fmt(settledAmt)}</span>
-//                   </div>
-//                   <div className="gs-person-right">
-//                     <span className={`gs-person-net ${!isPaid ? "gs-person-net--due" : "gs-person-net--clear"}`}>
-//                       {isPaid ? "✓ Cleared" : fmt(unsettledDue) + " due"}
-//                     </span>
-//                     <button
-//                       className={`gs-settle-all-btn ${isPaid ? "gs-settle-all-btn--done" : ""}`}
-//                       onClick={() => !isPaid && onSettleAll && onSettleAll(u, unsettledDue)}
-//                       disabled={isPaid}
-//                       title={isPaid ? "Nothing to settle" : `Settle ${fmt(unsettledDue)}`}
-//                     >
-//                       {isPaid ? "✓ Settled" : "✓ Settle All"}
-//                     </button>
-//                   </div>
-//                 </div>
-//               );
-//             })}
-//           </div>
-//         </>
-//       )}
-
-//       {/* ── You Owe ── */}
-//       {youOweEntries.length > 0 && (
-//         <>
-//           <p className="gs-subsection-label" style={{ marginTop: others.length > 0 ? 10 : 0 }}>
-//             🔴 You Owe
-//           </p>
-//           <div className="gs-person-grid">
-//             {youOweEntries.map(([paidBy, amt]) => (
-//               <div key={paidBy} className="gs-person-card gs-person-card--you-owe">
-//                 <span className="gs-person-avatar" style={{ background: "#ef444422", color: "#ef4444" }}>
-//                   {paidBy[0].toUpperCase()}
-//                 </span>
-//                 <div className="gs-person-info">
-//                   <span className="gs-person-name">{paidBy}</span>
-//                   <span className="gs-person-detail">You owe them · tap to pay</span>
-//                 </div>
-//                 <div className="gs-person-right">
-//                   <span className="gs-person-net gs-person-net--you-owe">{fmt(amt)}</span>
-//                   <span className="gs-you-owe-hint">ask them to mark paid</span>
-//                 </div>
-//               </div>
-//             ))}
-//           </div>
-//         </>
-//       )}
-
-//     </div>
-//   );
-// }
-
-function PersonBalances({ netBalances, username, members, onSettleAll }) {
-  const entries = Object.entries(netBalances).filter(([, d]) => d.net !== 0 || d.youGet > 0 || d.youOwe > 0);
+// ── PersonBalances — with Pay & Save button for "You Owe" entries ──────────────
+function PersonBalances({ netBalances, username, members, onSettleAll, onPayAndSave }) {
+  const entries    = Object.entries(netBalances).filter(([, d]) => d.net !== 0 || d.youGet > 0 || d.youOwe > 0);
   if (entries.length === 0) return null;
 
   const theyOweYou = entries.filter(([, d]) => d.net > 0);
@@ -1062,6 +1003,7 @@ function PersonBalances({ netBalances, username, members, onSettleAll }) {
   return (
     <div className="gs-person-balances">
 
+      {/* Who Owes You */}
       {theyOweYou.length > 0 && (
         <>
           <p className="gs-subsection-label">💰 Who Owes You (Net)</p>
@@ -1088,6 +1030,7 @@ function PersonBalances({ netBalances, username, members, onSettleAll }) {
         </>
       )}
 
+      {/* You Owe — with Pay & Save button */}
       {youOweThem.length > 0 && (
         <>
           <p className="gs-subsection-label" style={{ marginTop: theyOweYou.length > 0 ? 10 : 0 }}>
@@ -1107,7 +1050,13 @@ function PersonBalances({ netBalances, username, members, onSettleAll }) {
                 </div>
                 <div className="gs-person-right">
                   <span className="gs-person-net gs-person-net--you-owe">{fmt(Math.abs(data.net))}</span>
-                  <span className="gs-you-owe-hint">ask them to mark paid</span>
+                  <button
+                    className="gs-pay-save-btn"
+                    onClick={() => onPayAndSave && onPayAndSave(person, Math.abs(data.net))}
+                    title={`Record ₹${Math.abs(data.net)} paid to ${person}`}
+                  >
+                    💾 Pay &amp; Save
+                  </button>
                 </div>
               </div>
             ))}
@@ -1115,6 +1064,7 @@ function PersonBalances({ netBalances, username, members, onSettleAll }) {
         </>
       )}
 
+      {/* All Settled */}
       {settled.length > 0 && (
         <>
           <p className="gs-subsection-label" style={{ marginTop: 10 }}>✅ All Settled</p>
@@ -1583,24 +1533,24 @@ function AddExpenseModal({ username, password, group, onClose, onAdded }) {
           )}
 
           {splitMode === "custom" && (
-  <div className="gs-custom-splits">
-    <div className="gs-splits-label-row">
-      <p className="gs-splits-label">Custom splits</p>
-      <span className="gs-splits-count">{fmt(sharesTotal)} / {fmt(amount || 0)}</span>
-    </div>
-    <div className="gs-custom-members--scroll">
-              {members.map(m => (
-                <div key={m} className="gs-custom-split-row">
-                  <span className="gs-split-avatar" style={{ background: m === username ? "#f59e0b22" : "#6366f122", color: m === username ? "#f59e0b" : "#818cf8" }}>
-                    {m[0].toUpperCase()}
-                  </span>
-                  <span style={{ flex: 1, fontSize: 12 }}>{m}{m === username ? " (you)" : ""}</span>
-                  <input className="gs-share-input" type="number" value={shares[m]}
-                    onChange={e => { setShares(p => ({ ...p, [m]: e.target.value })); setErr(""); }}
-                    placeholder="₹0" />
-                </div>
-              ))}
-               </div>
+            <div className="gs-custom-splits">
+              <div className="gs-splits-label-row">
+                <p className="gs-splits-label">Custom splits</p>
+                <span className="gs-splits-count">{fmt(sharesTotal)} / {fmt(amount || 0)}</span>
+              </div>
+              <div className="gs-custom-members--scroll">
+                {members.map(m => (
+                  <div key={m} className="gs-custom-split-row">
+                    <span className="gs-split-avatar" style={{ background: m === username ? "#f59e0b22" : "#6366f122", color: m === username ? "#f59e0b" : "#818cf8" }}>
+                      {m[0].toUpperCase()}
+                    </span>
+                    <span style={{ flex: 1, fontSize: 12 }}>{m}{m === username ? " (you)" : ""}</span>
+                    <input className="gs-share-input" type="number" value={shares[m]}
+                      onChange={e => { setShares(p => ({ ...p, [m]: e.target.value })); setErr(""); }}
+                      placeholder="₹0" />
+                  </div>
+                ))}
+              </div>
               {amount && Math.abs(sharesTotal - parseFloat(amount)) > 0.05 && (
                 <p style={{ fontSize: 10, color: "#f59e0b", marginTop: 4 }}>
                   Remaining: {fmt(Math.max(0, parseFloat(amount) - sharesTotal))}
@@ -1627,13 +1577,13 @@ function AddExpenseModal({ username, password, group, onClose, onAdded }) {
 
 // ── GroupSignIn ────────────────────────────────────────────────────────────────
 function GroupSignIn({ onSignIn, showToast }) {
-  const [step,       setStep]      = useState("username");
-  const [username,   setUsername]  = useState("");
-  const [password,   setPassword]  = useState("");
+  const [step,       setStep]       = useState("username");
+  const [username,   setUsername]   = useState("");
+  const [password,   setPassword]   = useState("");
   const [userExists, setUserExists] = useState(null);
-  const [loading,    setLoading]   = useState(false);
-  const [showPw,     setShowPw]    = useState(false);
-  const [err,        setErr]       = useState("");
+  const [loading,    setLoading]    = useState(false);
+  const [showPw,     setShowPw]     = useState(false);
+  const [err,        setErr]        = useState("");
 
   const API_BASE_LOCAL = "https://pdf-qna-backend.onrender.com";
 
@@ -1652,22 +1602,6 @@ function GroupSignIn({ onSignIn, showToast }) {
     } catch { setErr("Could not reach server. Try again."); }
     finally { setLoading(false); }
   };
-
-  // const handleSignIn = async () => {
-  //   if (password.length < 4) { setErr("Min 4 characters."); return; }
-  //   setErr(""); setLoading(true);
-  //   try {
-  //     const res = await fetch(`${API_BASE_LOCAL}/expenses/sync`, {
-  //       method: "POST", headers: { "Content-Type": "application/json" },
-  //       body: JSON.stringify({ username: username.trim().toLowerCase(), password }),
-  //     });
-  //     const d = await res.json();
-  //     if (!res.ok) throw new Error(d.detail || "Invalid credentials.");
-  //     if (onSignIn) onSignIn({ username: username.trim().toLowerCase(), password });
-  //     if (showToast) showToast(`✅ Signed in as @${username.trim().toLowerCase()}`, "success");
-  //   } catch (e) { setErr(e.message); }
-  //   finally { setLoading(false); }
-  // };
 
   const handleSignIn = async () => {
     if (password.length < 4) { setErr("Min 4 characters."); return; }
@@ -1689,8 +1623,6 @@ function GroupSignIn({ onSignIn, showToast }) {
           has_budget: d.has_budget || false,
         },
       });
-      // Toast removed here — parent (ExpenseTracker) now shows it
-      // with full info: "✅ Signed in · synced N expenses + M accounts"
     } catch (e) { setErr(e.message); }
     finally { setLoading(false); }
   };
@@ -1780,7 +1712,6 @@ const GS_CSS = `
 .gs-section-sub{font-size:11px;color:rgba(255,255,255,0.35);margin:3px 0 0;}
 .gs-header-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
 
-/* Push button */
 .gs-push-btn{display:inline-flex;align-items:center;gap:5px;padding:6px 12px;border-radius:20px;border:1px solid rgba(99,102,241,0.3);background:rgba(99,102,241,0.08);color:rgba(255,255,255,0.5);font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}
 .gs-push-btn:hover:not(:disabled){background:rgba(99,102,241,0.18);color:#fff;}
 .gs-push-btn--on{border-color:rgba(34,197,94,0.4);background:rgba(34,197,94,0.1);color:#22c55e;}
@@ -1788,7 +1719,6 @@ const GS_CSS = `
 .gs-push-btn--sm{padding:5px 9px;font-size:14px;}
 .gs-push-btn:disabled{opacity:0.4;cursor:not-allowed;}
 
-/* Push info banner */
 .gs-push-banner{display:flex;align-items:center;gap:10px;padding:11px 14px;background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.2);border-radius:10px;font-size:12px;color:rgba(255,255,255,0.6);flex-wrap:wrap;}
 .gs-push-banner span:first-child{font-size:18px;flex-shrink:0;}
 .gs-push-banner span:nth-child(2){flex:1;line-height:1.5;}
@@ -1806,6 +1736,7 @@ const GS_CSS = `
 .gs-signin-btn:disabled{opacity:0.4;cursor:not-allowed;transform:none;}
 .gs-signin-user-badge{display:flex;align-items:center;gap:9px;padding:8px 11px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:9px;font-size:13px;font-weight:600;color:rgba(255,255,255,0.75);}
 .gs-signin-hint{font-size:10px;color:rgba(255,255,255,0.2);text-align:center;line-height:1.6;margin-top:4px;}
+
 .gs-btn{display:inline-flex;align-items:center;gap:5px;padding:7px 14px;border-radius:20px;border:none;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}
 .gs-btn--primary{background:linear-gradient(135deg,#6366f1,#a855f7);color:#fff;}.gs-btn--primary:hover{transform:translateY(-1px);box-shadow:0 4px 14px rgba(99,102,241,0.35);}
 .gs-btn--secondary{background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);color:rgba(255,255,255,0.7);}.gs-btn--secondary:hover{background:rgba(255,255,255,0.1);color:#fff;}
@@ -1813,12 +1744,15 @@ const GS_CSS = `
 .gs-btn--ghost.gs-btn--active{background:rgba(245,158,11,0.1);border-color:rgba(245,158,11,0.35);color:#f59e0b;}
 .gs-btn--danger{background:linear-gradient(135deg,#ef4444,#dc2626);color:#fff;}.gs-btn--danger:hover{transform:translateY(-1px);}
 .gs-btn--leave{background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.28);color:#f87171;}.gs-btn--leave:hover{background:rgba(239,68,68,0.18);color:#ef4444;transform:translateY(-1px);}
+
 .gs-loading{display:flex;align-items:center;justify-content:center;gap:10px;padding:32px;color:rgba(255,255,255,0.4);font-size:13px;}
 .gs-spinner{width:18px;height:18px;border:2px solid rgba(255,255,255,0.1);border-top-color:rgba(245,158,11,0.8);border-radius:50%;animation:gs-spin 0.7s linear infinite;}
 @keyframes gs-spin{to{transform:rotate(360deg)}}
+
 .gs-empty-state{display:flex;flex-direction:column;align-items:center;gap:8px;padding:48px 24px;text-align:center;color:rgba(255,255,255,0.4);}
 .gs-empty-state h3{font-size:16px;color:rgba(255,255,255,0.7);margin:0;}.gs-empty-state p{font-size:13px;line-height:1.6;margin:0;}
 .gs-empty-icon{font-size:40px;line-height:1;}
+
 .gs-group-grid{display:flex;flex-direction:column;gap:10px;}
 .gs-group-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:14px;padding:14px;cursor:pointer;transition:all 0.15s;}
 .gs-group-card:hover{background:rgba(255,255,255,0.05);border-color:rgba(255,255,255,0.14);transform:translateY(-1px);}
@@ -1833,15 +1767,13 @@ const GS_CSS = `
 .gs-gc-badge--owe{background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.25);color:#ef4444;}
 .gs-gc-badge--owed{background:rgba(34,197,94,0.12);border:1px solid rgba(34,197,94,0.25);color:#22c55e;}
 .gs-gc-badge--clear{background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.15);color:rgba(34,197,94,0.7);}
-.gs-person-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
-.gs-settle-all-btn{padding:4px 11px;border-radius:8px;border:1px solid rgba(34,197,94,0.35);background:rgba(34,197,94,0.1);color:#22c55e;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}
-.gs-settle-all-btn:hover:not(:disabled){background:rgba(34,197,94,0.22);transform:translateY(-1px);box-shadow:0 3px 10px rgba(34,197,94,0.2);}
-.gs-settle-all-btn--done{border-color:rgba(34,197,94,0.15)!important;background:rgba(34,197,94,0.04)!important;color:rgba(34,197,94,0.35)!important;cursor:not-allowed!important;transform:none!important;box-shadow:none!important;}
+
 .gs-detail-view{display:flex;flex-direction:column;gap:14px;}
 .gs-detail-header{display:flex;align-items:flex-start;gap:10px;flex-wrap:wrap;}
 .gs-back-btn{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);border-radius:20px;padding:6px 13px;color:rgba(255,255,255,0.6);font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;transition:all 0.15s;flex-shrink:0;white-space:nowrap;}.gs-back-btn:hover{color:#fff;background:rgba(255,255,255,0.09);}
 .gs-detail-title-wrap{flex:1;}.gs-detail-title{font-size:17px;font-weight:800;color:#fff;margin:0;}.gs-detail-desc{font-size:11px;color:rgba(255,255,255,0.3);margin:3px 0 0;}
 .gs-detail-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+
 .gs-balance-strip{display:flex;gap:8px;flex-wrap:wrap;}
 .gs-bal-card{flex:1;min-width:80px;border-radius:12px;padding:10px 13px;display:flex;flex-direction:column;gap:4px;}
 .gs-bal-card--owe{background:rgba(239,68,68,0.09);border:1px solid rgba(239,68,68,0.2);}
@@ -1850,30 +1782,41 @@ const GS_CSS = `
 .gs-bal-card--members{background:rgba(245,158,11,0.09);border:1px solid rgba(245,158,11,0.2);}
 .gs-bal-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:rgba(255,255,255,0.4);}
 .gs-bal-val{font-size:15px;font-weight:800;color:#fff;font-family:'JetBrains Mono',monospace;}
+
 .gs-members-row{display:flex;flex-wrap:wrap;gap:6px;}
 .gs-member-chip{display:flex;align-items:center;gap:6px;padding:4px 10px 4px 4px;border-radius:20px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);}
 .gs-member-avatar{width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;}
 .gs-member-name{font-size:11px;color:rgba(255,255,255,0.6);}
 .gs-member-remove{background:none;border:none;color:rgba(239,68,68,0.4);cursor:pointer;font-size:11px;padding:1px 3px;border-radius:4px;line-height:1;transition:color 0.15s;}.gs-member-remove:hover{color:#ef4444;}
+
 .gs-person-balances{display:flex;flex-direction:column;gap:8px;}
 .gs-subsection-label{font-size:9px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:rgba(255,255,255,0.25);}
 .gs-person-grid{display:flex;flex-direction:column;gap:6px;}
 .gs-person-card{display:flex;align-items:center;gap:9px;padding:9px 12px;background:rgba(245,158,11,0.06);border:1px solid rgba(245,158,11,0.15);border-radius:10px;}
 .gs-person-card--clear{background:rgba(34,197,94,0.06);border-color:rgba(34,197,94,0.15);}
 .gs-person-card--you-owe{background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.18);}
-.gs-person-net--you-owe{color:#ef4444;font-size:14px;font-weight:800;font-family:'JetBrains Mono',monospace;}
-.gs-you-owe-hint{font-size:9px;color:rgba(255,255,255,0.25);text-align:right;margin-top:2px;}
 .gs-person-avatar{width:32px;height:32px;border-radius:50%;background:rgba(245,158,11,0.15);color:#f59e0b;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;}
 .gs-person-info{flex:1;display:flex;flex-direction:column;gap:2px;}.gs-person-name{font-size:13px;font-weight:700;color:#fff;}.gs-person-detail{font-size:10px;color:rgba(255,255,255,0.35);font-family:'JetBrains Mono',monospace;}
+.gs-person-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
 .gs-person-net{font-size:12px;font-weight:700;font-family:'JetBrains Mono',monospace;}.gs-person-net--due{color:#f59e0b;}.gs-person-net--clear{color:#22c55e;}
+.gs-person-net--you-owe{color:#ef4444;font-size:14px;font-weight:800;font-family:'JetBrains Mono',monospace;}
+
+.gs-settle-all-btn{padding:4px 11px;border-radius:8px;border:1px solid rgba(34,197,94,0.35);background:rgba(34,197,94,0.1);color:#22c55e;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}
+.gs-settle-all-btn:hover:not(:disabled){background:rgba(34,197,94,0.22);transform:translateY(-1px);box-shadow:0 3px 10px rgba(34,197,94,0.2);}
+
+.gs-pay-save-btn{padding:4px 11px;border-radius:8px;border:1px solid rgba(239,68,68,0.35);background:rgba(239,68,68,0.1);color:#f87171;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}
+.gs-pay-save-btn:hover{background:rgba(239,68,68,0.22);color:#ef4444;transform:translateY(-1px);box-shadow:0 3px 10px rgba(239,68,68,0.2);}
+
 .gs-filters-row{display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
 .gs-period-sel{background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:20px;padding:5px 12px;color:var(--text,#e4e4f0);font-size:11px;font-weight:600;font-family:inherit;outline:none;cursor:pointer;appearance:none;-webkit-appearance:none;}
 .gs-period-sel option{background:#1a1a2e;color:#fff;}
+
 .gs-period-summary{display:flex;align-items:center;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:12px 14px;gap:0;flex-wrap:wrap;}
 .gs-ps-item{flex:1;display:flex;flex-direction:column;gap:3px;align-items:center;min-width:80px;}
 .gs-ps-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:0.08em;color:rgba(255,255,255,0.3);}
 .gs-ps-val{font-size:16px;font-weight:800;color:#fff;font-family:'JetBrains Mono',monospace;text-align:center;}
 .gs-ps-div{width:1px;background:rgba(255,255,255,0.07);height:34px;flex-shrink:0;margin:0 6px;}
+
 .gs-compare-wrap{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:12px;}
 .gs-cmp-top{display:flex;align-items:center;gap:14px;justify-content:space-between;}
 .gs-cmp-col{display:flex;flex-direction:column;gap:3px;}.gs-cmp-period{font-size:10px;color:rgba(255,255,255,0.4);}.gs-cmp-total{font-size:18px;font-weight:800;font-family:'JetBrains Mono',monospace;}.gs-cmp-txns{font-size:10px;color:rgba(255,255,255,0.3);}
@@ -1883,6 +1826,7 @@ const GS_CSS = `
 .gs-cmp-bar-row{display:flex;align-items:center;gap:6px;}
 .gs-cmp-bar{height:6px;border-radius:3px;min-width:3px;transition:width 0.5s ease;}.gs-cmp-bar--prev{background:rgba(255,255,255,0.15);}
 .gs-cmp-bar-val{font-size:10px;font-family:'JetBrains Mono',monospace;white-space:nowrap;}
+
 .gs-expenses-list{display:flex;flex-direction:column;gap:8px;}
 .gs-exp-card{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:12px;overflow:hidden;transition:background 0.15s;}
 .gs-exp-card--settled{opacity:0.6;}
@@ -1904,6 +1848,7 @@ const GS_CSS = `
 .gs-settle-btn{padding:4px 10px;border-radius:8px;border:1px solid rgba(34,197,94,0.3);background:rgba(34,197,94,0.1);color:#22c55e;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;}.gs-settle-btn:hover{background:rgba(34,197,94,0.22);}
 .gs-del-exp-btn{align-self:flex-start;padding:5px 11px;border-radius:8px;border:1px solid rgba(239,68,68,0.22);background:transparent;color:rgba(239,68,68,0.5);font-size:11px;cursor:pointer;font-family:inherit;transition:all 0.15s;margin-top:4px;}.gs-del-exp-btn:hover{background:rgba(239,68,68,0.1);color:#ef4444;}
 .gs-confirm-del{display:flex;align-items:center;gap:8px;padding:8px;background:rgba(239,68,68,0.07);border:1px solid rgba(239,68,68,0.2);border-radius:8px;font-size:12px;color:rgba(255,255,255,0.6);}
+
 .gs-modal{max-width:400px!important;text-align:left;}
 .gs-exp-modal{max-width:440px!important;max-height:90dvh;overflow-y:auto;}
 .gs-exp-modal::-webkit-scrollbar{width:3px;}
@@ -1920,25 +1865,26 @@ const GS_CSS = `
 .gs-equal-members--scroll{max-height:160px;overflow-y:auto;padding-right:4px;}
 .gs-equal-members--scroll::-webkit-scrollbar{width:3px;}
 .gs-equal-members--scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:4px;}
-.gs-equal-members--scroll::-webkit-scrollbar-track{background:transparent;}
 .gs-equal-member{display:flex;align-items:center;gap:7px;font-size:12px;color:rgba(255,255,255,0.6);padding:3px 2px;border-radius:6px;}
 .gs-equal-member:hover{background:rgba(255,255,255,0.03);}
 .gs-custom-splits{background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:9px;padding:10px;display:flex;flex-direction:column;gap:6px;}
 .gs-custom-members--scroll{display:flex;flex-direction:column;gap:6px;max-height:160px;overflow-y:auto;padding-right:4px;}
 .gs-custom-members--scroll::-webkit-scrollbar{width:3px;}
 .gs-custom-members--scroll::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.12);border-radius:4px;}
-.gs-custom-members--scroll::-webkit-scrollbar-track{background:transparent;}
 .gs-custom-split-row{display:flex;align-items:center;gap:8px;}
 .gs-share-input{width:80px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:7px;padding:6px 9px;color:#fff;font-size:12px;font-family:monospace;outline:none;text-align:right;}
 .gs-share-input:focus{border-color:rgba(245,158,11,0.4);}
+
 .gs-invite-box{display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:9px;}
 .gs-invite-token{flex:1;font-size:10px;color:rgba(255,255,255,0.5);font-family:'JetBrains Mono',monospace;word-break:break-all;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .gs-copy-btn{padding:5px 11px;border-radius:8px;border:1px solid rgba(245,158,11,0.3);background:rgba(245,158,11,0.1);color:#f59e0b;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;transition:all 0.15s;white-space:nowrap;}.gs-copy-btn:hover{background:rgba(245,158,11,0.22);}
+
 @media(max-width:600px){
   .gs-balance-strip{gap:6px;}.gs-bal-card{min-width:70px;padding:8px 10px;}.gs-bal-val{font-size:13px;}
   .gs-detail-header{flex-direction:column;}.gs-detail-actions{width:100%;justify-content:flex-end;}
   .gs-header-actions{width:100%;}.gs-form-row{flex-direction:column;}
   .gs-cmp-top{flex-direction:column;text-align:center;}.gs-cmp-arrow{transform:rotate(90deg);}
   .gs-filters-row{gap:5px;}.gs-push-banner{gap:7px;}
+  .gs-person-card{flex-wrap:wrap;}.gs-person-right{width:100%;flex-direction:row;justify-content:space-between;align-items:center;}
 }
 `;
