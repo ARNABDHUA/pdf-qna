@@ -816,6 +816,7 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
               <AddMemberModal
                 username={username} password={password}
                 groupId={activeGroup.group_id}
+                members={activeGroup.members || []}   // ← add this
                 onClose={() => setAddMemberModal(false)}
                 onAdded={(mem) => {
                   setAddMemberModal(false);
@@ -1383,7 +1384,7 @@ function InviteModal({ username, password, group, onClose }) {
 }
 
 // ── Add Member Modal ───────────────────────────────────────────────────────────
-function AddMemberModal({ username, password, groupId, onClose, onAdded }) {
+function AddMemberModal({ username, password, groupId, members = [], onClose, onAdded }) {
   const [mem,     setMem]     = useState("");
   const [loading, setLoading] = useState(false);
   const [err,     setErr]     = useState("");
@@ -1391,12 +1392,25 @@ function AddMemberModal({ username, password, groupId, onClose, onAdded }) {
   const handleAdd = async () => {
     const m = mem.trim().toLowerCase();
     if (!m) { setErr("Enter a username."); return; }
+    if (m === username.toLowerCase()) { setErr("That's you — you're already in the group."); return; }
+    if (members.map(x => x.toLowerCase()).includes(m)) {
+      setErr(`@${m} is already a member of this group.`);
+      return;
+    }
     setLoading(true); setErr("");
     try {
       await apiCall("/add-member", { username, password, group_id: groupId, member_username: m });
       onAdded(m);
-    } catch (e) { setErr(e.message); }
-    finally { setLoading(false); }
+    } catch (e) {
+      const msg = e.message?.toLowerCase() || "";
+      if (msg.includes("already") || msg.includes("exist") || msg.includes("member")) {
+        setErr(`@${m} is already a member of this group.`);
+      } else {
+        setErr(e.message);
+      }
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -1406,16 +1420,50 @@ function AddMemberModal({ username, password, groupId, onClose, onAdded }) {
         <h3>Add Member</h3>
         <div className="et-cloud-field">
           <label>Username</label>
-          <input className="et-cloud-input" value={mem} onChange={e => { setMem(e.target.value); setErr(""); }}
-            onKeyDown={e => e.key === "Enter" && handleAdd()} placeholder="e.g. ravi_123" autoFocus />
+          <input
+            className="et-cloud-input"
+            value={mem}
+            onChange={e => { setMem(e.target.value); setErr(""); }}
+            onKeyDown={e => e.key === "Enter" && handleAdd()}
+            placeholder="e.g. ravi_123"
+            autoFocus
+          />
           <span style={{ fontSize: 10, color: "rgba(255,255,255,0.3)", marginTop: 4, display: "block" }}>
             User must have saved expenses to cloud at least once.
           </span>
         </div>
+
+        {/* Current members preview */}
+        {members.length > 0 && (
+          <div style={{ marginBottom: 4 }}>
+            <p style={{ fontSize: 9, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "rgba(255,255,255,0.25)", marginBottom: 6 }}>
+              Current Members ({members.length})
+            </p>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+              {members.map(m => (
+                <span key={m} style={{
+                  fontSize: 10, padding: "2px 9px", borderRadius: 20,
+                  background: m === username ? "rgba(245,158,11,0.12)" : "rgba(99,102,241,0.1)",
+                  border: `1px solid ${m === username ? "rgba(245,158,11,0.28)" : "rgba(99,102,241,0.22)"}`,
+                  color: m === username ? "#f59e0b" : "#818cf8", fontWeight: 600,
+                }}>
+                  {m}{m === username ? " (you)" : ""}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
         {err && <div className="et-cloud-error">⚠️ {err}</div>}
+
         <div className="et-modal-actions">
           <button className="et-modal-cancel" onClick={onClose}>Cancel</button>
-          <button className="et-modal-confirm" style={{ background: "linear-gradient(135deg,#6366f1,#a855f7)" }} onClick={handleAdd} disabled={loading}>
+          <button
+            className="et-modal-confirm"
+            style={{ background: loading ? "#333" : "linear-gradient(135deg,#6366f1,#a855f7)" }}
+            onClick={handleAdd}
+            disabled={loading || !mem.trim()}
+          >
             {loading ? "Adding…" : "+ Add Member"}
           </button>
         </div>

@@ -1587,11 +1587,9 @@ const handleCloudSuccess = useCallback((result) => {
   if (result.type === "save") {
     showToast(`☁️ ${result.message}`, "success");
   } else if (result.type === "sync") {
-    setExpenses(prev => {
-      const m = Object.fromEntries(prev.map(e => [e.id, e]));
-      for (const e of result.expenses) m[e.id] = e;
-      return Object.values(m).sort((a, b) => b.timestamp - a.timestamp);
-    });
+    setExpenses(
+      [...result.expenses].sort((a, b) => b.timestamp - a.timestamp)
+    );
     if (result.has_budget && result.budget) {
           const cloudBudget = result.budget;
           // Ensure months structure exists so AccountsTab renders correctly
