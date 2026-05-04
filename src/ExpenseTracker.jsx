@@ -1156,130 +1156,635 @@ function AccountsTab({ budget, setBudget, showToast, onRecordAccountTransaction 
 // ══════════════════════════════════════════════════════════════════════════════
 // ── Category Breakdown Tab
 // ══════════════════════════════════════════════════════════════════════════════
-function CategoryBreakdown({ expenses, catIcons, catColors }) {
-  const [period, setPeriod] = useState("month");
-  const [selectedCat, setSelectedCat] = useState("all");
+// ─────────────────────────────────────────────────────────────────────────────
+// SheetJS lazy loader
+// ─────────────────────────────────────────────────────────────────────────────
+function loadSheetJS() {
+  return new Promise((resolve, reject) => {
+    if (window.XLSX) { resolve(window.XLSX); return; }
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    s.onload  = () => resolve(window.XLSX);
+    s.onerror = () => reject(new Error("Failed to load SheetJS"));
+    document.head.appendChild(s);
+  });
+}
 
-  const filtered = useMemo(() => {
-    const ist = new Date(Date.now() + 5.5 * 3600000);
-    const today = isoDate(ist), thisWeek = weekKey(ist), thisMonth = monthKey(ist), thisYear = yearKey(ist);
-    return expenses.filter(e => {
-      if (e.type !== "expense") return false;
-      if (period === "day")   return isoDate(e.timestamp) === today;
-      if (period === "week")  return weekKey(e.timestamp) === thisWeek;
-      if (period === "month") return monthKey(e.timestamp) === thisMonth;
-      if (period === "year")  return yearKey(e.timestamp) === thisYear;
+// ─────────────────────────────────────────────────────────────────────────────
+// Styling helpers
+// ─────────────────────────────────────────────────────────────────────────────
+const STYLE = {
+  title:        { font:{ bold:true, sz:14, color:{ rgb:"FFFFFF" } }, fill:{ fgColor:{ rgb:"1A1A2E" }, patternType:"solid" }, alignment:{ horizontal:"left", vertical:"center" } },
+  header:       { font:{ bold:true, sz:11, color:{ rgb:"FFFFFF" } }, fill:{ fgColor:{ rgb:"2D2D4E" }, patternType:"solid" }, alignment:{ horizontal:"center", vertical:"center" }, border:{ bottom:{ style:"medium", color:{ rgb:"6366F1" } } } },
+  catHeader:    { font:{ bold:true, sz:12, color:{ rgb:"FFFFFF" } }, fill:{ fgColor:{ rgb:"1E3A2F" }, patternType:"solid" }, alignment:{ horizontal:"left", vertical:"center" } },
+  dayHeader:    { font:{ bold:true, sz:10, color:{ rgb:"94A3B8" } }, fill:{ fgColor:{ rgb:"0F172A" }, patternType:"solid" } },
+  expense:      { font:{ sz:10, color:{ rgb:"EF4444" } }, alignment:{ horizontal:"right" } },
+  income:       { font:{ sz:10, color:{ rgb:"22C55E" } }, alignment:{ horizontal:"right" } },
+  label:        { font:{ sz:10, color:{ rgb:"94A3B8" } }, alignment:{ horizontal:"left" } },
+  date:         { font:{ sz:10, color:{ rgb:"94A3B8" } }, alignment:{ horizontal:"center" } },
+  description:  { font:{ sz:10, color:{ rgb:"E2E8F0" } }, alignment:{ horizontal:"left", wrapText:true } },
+  total:        { font:{ bold:true, sz:11, color:{ rgb:"FFFFFF" } }, fill:{ fgColor:{ rgb:"1E293B" }, patternType:"solid" }, alignment:{ horizontal:"right" } },
+  totalLabel:   { font:{ bold:true, sz:11, color:{ rgb:"FFFFFF" } }, fill:{ fgColor:{ rgb:"1E293B" }, patternType:"solid" }, alignment:{ horizontal:"left" } },
+  summaryExp:   { font:{ bold:true, sz:11, color:{ rgb:"EF4444" } }, alignment:{ horizontal:"right" } },
+  summaryInc:   { font:{ bold:true, sz:11, color:{ rgb:"22C55E" } }, alignment:{ horizontal:"right" } },
+  normal:       { font:{ sz:10, color:{ rgb:"CBD5E1" } }, alignment:{ horizontal:"left" } },
+  number:       { font:{ sz:10, color:{ rgb:"CBD5E1" } }, alignment:{ horizontal:"right" } },
+};
+
+function styleCell(ws, ref, style) {
+  if (ws[ref]) ws[ref].s = style;
+}
+
+const MONTH_NAMES = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const fmtINR  = n  => `\u20B9${Number(n).toLocaleString("en-IN", { maximumFractionDigits:2 })}`;
+const fmtDate = ts => new Date(ts).toLocaleDateString("en-IN", { day:"2-digit", month:"short", year:"numeric" });
+const fmtTime = ts => new Date(ts).toLocaleTimeString("en-IN", { hour:"2-digit", minute:"2-digit", hour12:true });
+const fmtDay  = ts => new Date(ts).toLocaleDateString("en-IN", { weekday:"short" });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MONTHLY WORKBOOK
+// Sheet 1: Summary (category totals, % share, grand total)
+// Sheet 2: All Transactions (every item, sorted by date, grouped by day)
+// Sheet 3..N: One sheet per category — item name, date, time, reason, account
+// ─────────────────────────────────────────────────────────────────────────────
+function buildMonthlyWorkbook(XLSX, expenses, monthKey, catIcons, catColors) {
+  const wb = XLSX.utils.book_new();
+  const [yr, mo] = monthKey.split("-").map(Number);
+  const monthLabel = new Date(yr, mo-1).toLocaleDateString("en-IN", { month:"long", year:"numeric" });
+
+  const inMonth = expenses
+    .filter(e => { const d = new Date(e.timestamp); return d.getFullYear()===yr && (d.getMonth()+1)===mo; })
+    .sort((a, b) => a.timestamp - b.timestamp);
+
+  // Build category map
+  const catMap = {};
+  for (const e of inMonth) {
+    if (!catMap[e.category]) catMap[e.category] = { expense:[], income:[], totalExp:0, totalInc:0 };
+    catMap[e.category][e.type].push(e);
+    if (e.type==="expense") catMap[e.category].totalExp += e.amount;
+    else                     catMap[e.category].totalInc += e.amount;
+  }
+  const grandExp = inMonth.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
+  const grandInc = inMonth.filter(e=>e.type==="income").reduce((s,e)=>s+e.amount,0);
+  const catsSorted = Object.entries(catMap).sort((a,b)=>b[1].totalExp - a[1].totalExp);
+
+  // ── SHEET 1: Summary ────────────────────────────────────────────────────────
+  const sumRows = [
+    [`Expense Report \u2014 ${monthLabel}`, "", "", "", "", ""],
+    [],
+    [`Generated: ${new Date().toLocaleDateString("en-IN")}`, "", `Total Records: ${inMonth.length}`, "", "", ""],
+    [],
+    ["Category", "Items", "Expense (\u20B9)", "Income (\u20B9)", "Net (\u20B9)", "% of Spend"],
+  ];
+  for (const [cat, v] of catsSorted) {
+    const pct = grandExp>0 ? ((v.totalExp/grandExp)*100).toFixed(1)+"%" : "0%";
+    sumRows.push([
+      `${catIcons?.[cat]||""} ${cat}`,
+      v.expense.length + v.income.length,
+      v.totalExp||0,
+      v.totalInc||0,
+      (v.totalInc - v.totalExp)||0,
+      pct,
+    ]);
+  }
+  sumRows.push([]);
+  sumRows.push(["GRAND TOTAL", inMonth.length, grandExp, grandInc, grandInc-grandExp, "100%"]);
+
+  const wsSummary = XLSX.utils.aoa_to_sheet(sumRows);
+  wsSummary["!cols"] = [{wch:28},{wch:10},{wch:16},{wch:16},{wch:16},{wch:12}];
+  wsSummary["!merges"] = [
+    {s:{r:0,c:0},e:{r:0,c:5}},
+    {s:{r:2,c:0},e:{r:2,c:1}},
+    {s:{r:2,c:2},e:{r:2,c:3}},
+  ];
+  styleCell(wsSummary, "A1", STYLE.title);
+  ["A5","B5","C5","D5","E5","F5"].forEach(ref => styleCell(wsSummary, ref, STYLE.header));
+  catsSorted.forEach(([,v], i) => {
+    const r = i+6;
+    styleCell(wsSummary, `A${r}`, STYLE.normal);
+    styleCell(wsSummary, `B${r}`, STYLE.number);
+    styleCell(wsSummary, `C${r}`, STYLE.summaryExp);
+    styleCell(wsSummary, `D${r}`, STYLE.summaryInc);
+    const net = v.totalInc - v.totalExp;
+    styleCell(wsSummary, `E${r}`, { font:{ bold:true, sz:11, color:{ rgb: net>=0?"22C55E":"EF4444" } }, alignment:{horizontal:"right"} });
+    styleCell(wsSummary, `F${r}`, STYLE.number);
+  });
+  const gtRow = catsSorted.length+7;
+  ["A","B","C","D","E","F"].forEach(col => styleCell(wsSummary, `${col}${gtRow}`, col==="A" ? STYLE.totalLabel : STYLE.total));
+  XLSX.utils.book_append_sheet(wb, wsSummary, "Summary");
+
+  // ── SHEET 2: All Transactions (day-grouped) ─────────────────────────────────
+  const allRows = [
+    [`All Transactions \u2014 ${monthLabel}`, "", "", "", "", "", "", ""],
+    [],
+    ["Date", "Day", "Time", "Category", "Item / Description", "Reason", "Account", "Type", "Amount (\u20B9)"],
+  ];
+
+  const byDay = {};
+  for (const e of inMonth) {
+    const dk = fmtDate(e.timestamp);
+    if (!byDay[dk]) byDay[dk] = [];
+    byDay[dk].push(e);
+  }
+
+  for (const [day, dayItems] of Object.entries(byDay).sort()) {
+    const dExp = dayItems.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
+    const dInc = dayItems.filter(e=>e.type==="income").reduce((s,e)=>s+e.amount,0);
+    allRows.push([day, fmtDay(new Date(dayItems[0].timestamp)), "", `${dayItems.length} record(s)`, `Spent: ${fmtINR(dExp)}`, dInc>0?`Received: ${fmtINR(dInc)}`:"", "", "", ""]);
+    for (const e of dayItems.sort((a,b)=>a.timestamp-b.timestamp)) {
+      allRows.push([
+        fmtDate(e.timestamp), fmtDay(e.timestamp), fmtTime(e.timestamp),
+        `${catIcons?.[e.category]||""} ${e.category}`,
+        e.description || "\u2014",
+        e.reason || "",
+        e.accountName || "",
+        e.type==="expense" ? "Expense" : "Income",
+        e.type==="expense" ? -e.amount : e.amount,
+      ]);
+    }
+    allRows.push([]);
+  }
+  allRows.push([]);
+  allRows.push(["","","","","","","","Total Expense", -grandExp]);
+  allRows.push(["","","","","","","","Total Income",   grandInc]);
+  allRows.push(["","","","","","","","Net",            grandInc-grandExp]);
+
+  const wsAll = XLSX.utils.aoa_to_sheet(allRows);
+  wsAll["!cols"] = [{wch:14},{wch:6},{wch:10},{wch:18},{wch:32},{wch:26},{wch:14},{wch:10},{wch:14}];
+  wsAll["!merges"] = [{s:{r:0,c:0},e:{r:0,c:8}}];
+  styleCell(wsAll, "A1", STYLE.title);
+  ["A3","B3","C3","D3","E3","F3","G3","H3","I3"].forEach(ref => styleCell(wsAll, ref, STYLE.header));
+  XLSX.utils.book_append_sheet(wb, wsAll, "All Transactions");
+
+  // ── SHEETS 3..N: Per-category detail ───────────────────────────────────────
+  for (const [cat, v] of catsSorted) {
+    const icon = catIcons?.[cat] || "";
+    const allItems = [...v.expense, ...v.income].sort((a,b)=>a.timestamp-b.timestamp);
+
+    const rows = [
+      [`${icon} ${cat} \u2014 ${monthLabel}`, "", "", "", "", "", ""],
+      [],
+      [
+        `Total Items: ${allItems.length}`, "",
+        `Spent: ${fmtINR(v.totalExp)}`, "",
+        `Received: ${fmtINR(v.totalInc)}`, "",
+        `Net: ${fmtINR(v.totalInc-v.totalExp)}`,
+      ],
+      [],
+      // Column headers
+      ["Date", "Day", "Time", "Item / Description", "Reason / Note", "Account", "Type", "Amount (\u20B9)"],
+    ];
+
+    // Group by date
+    const itemsByDay = {};
+    for (const e of allItems) {
+      const dk = fmtDate(e.timestamp);
+      if (!itemsByDay[dk]) itemsByDay[dk] = [];
+      itemsByDay[dk].push(e);
+    }
+
+    const dayHeaderRowIdxs = [];
+    const expenseRowIdxs   = [];
+    const incomeRowIdxs    = [];
+
+    for (const [day, dayItems] of Object.entries(itemsByDay).sort()) {
+      const dExp = dayItems.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
+      // Day header
+      dayHeaderRowIdxs.push(rows.length);
+      rows.push([
+        day, fmtDay(new Date(dayItems[0].timestamp)), "",
+        `${dayItems.length} transaction(s)`,
+        dExp>0 ? `Day spend: ${fmtINR(dExp)}` : "",
+        "", "", "",
+      ]);
+      for (const e of dayItems.sort((a,b)=>a.timestamp-b.timestamp)) {
+        if (e.type==="expense") expenseRowIdxs.push(rows.length);
+        else                     incomeRowIdxs.push(rows.length);
+        rows.push([
+          fmtDate(e.timestamp),
+          fmtDay(e.timestamp),
+          fmtTime(e.timestamp),
+          e.description || "\u2014",
+          e.reason || "",
+          e.accountName || "",
+          e.type==="expense" ? "Expense" : "Income",
+          e.type==="expense" ? -e.amount : e.amount,
+        ]);
+      }
+      rows.push([]); // blank between days
+    }
+
+    rows.push([]);
+    const totalBaseIdx = rows.length;
+    rows.push(["","","","","","","Total Expense", v.totalExp>0 ? -v.totalExp : 0]);
+    rows.push(["","","","","","","Total Income",   v.totalInc]);
+    rows.push(["","","","","","","Net",            v.totalInc-v.totalExp]);
+
+    const wsCat = XLSX.utils.aoa_to_sheet(rows);
+    wsCat["!cols"] = [{wch:14},{wch:6},{wch:10},{wch:34},{wch:28},{wch:14},{wch:12},{wch:14}];
+    wsCat["!merges"] = [
+      {s:{r:0,c:0},e:{r:0,c:7}},
+      {s:{r:2,c:0},e:{r:2,c:1}},
+      {s:{r:2,c:2},e:{r:2,c:3}},
+      {s:{r:2,c:4},e:{r:2,c:5}},
+    ];
+
+    styleCell(wsCat, "A1", STYLE.catHeader);
+    ["A5","B5","C5","D5","E5","F5","G5","H5"].forEach(ref => styleCell(wsCat, ref, STYLE.header));
+
+    const excelR = i => i+1;
+    for (const ri of dayHeaderRowIdxs) {
+      ["A","B","C","D","E","F","G","H"].forEach(col => styleCell(wsCat, `${col}${excelR(ri)}`, STYLE.dayHeader));
+    }
+    for (const ri of expenseRowIdxs) {
+      const er = excelR(ri);
+      styleCell(wsCat, `A${er}`, STYLE.date);
+      styleCell(wsCat, `B${er}`, STYLE.date);
+      styleCell(wsCat, `C${er}`, STYLE.date);
+      styleCell(wsCat, `D${er}`, STYLE.description);
+      styleCell(wsCat, `E${er}`, STYLE.label);
+      styleCell(wsCat, `F${er}`, STYLE.label);
+      styleCell(wsCat, `G${er}`, { font:{ sz:10, color:{ rgb:"EF4444" } } });
+      styleCell(wsCat, `H${er}`, STYLE.expense);
+    }
+    for (const ri of incomeRowIdxs) {
+      const er = excelR(ri);
+      styleCell(wsCat, `A${er}`, STYLE.date);
+      styleCell(wsCat, `B${er}`, STYLE.date);
+      styleCell(wsCat, `C${er}`, STYLE.date);
+      styleCell(wsCat, `D${er}`, STYLE.description);
+      styleCell(wsCat, `E${er}`, STYLE.label);
+      styleCell(wsCat, `F${er}`, STYLE.label);
+      styleCell(wsCat, `G${er}`, { font:{ sz:10, color:{ rgb:"22C55E" } } });
+      styleCell(wsCat, `H${er}`, STYLE.income);
+    }
+    for (let ti=0; ti<3; ti++) {
+      const er = excelR(totalBaseIdx+ti);
+      styleCell(wsCat, `G${er}`, STYLE.totalLabel);
+      styleCell(wsCat, `H${er}`, ti===0 ? STYLE.summaryExp : ti===1 ? STYLE.summaryInc : { font:{ bold:true, sz:12, color:{ rgb: (v.totalInc-v.totalExp)>=0?"22C55E":"EF4444" } }, alignment:{horizontal:"right"} });
+    }
+
+    const sheetName = (`${icon} ${cat}`).replace(/[\\/?*[\]]/g,"").slice(0,31);
+    XLSX.utils.book_append_sheet(wb, wsCat, sheetName);
+  }
+
+  return wb;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// YEARLY WORKBOOK
+// Sheet 1: Summary — category × month pivot table
+// Sheet 2: By Category — all items for the year grouped per category
+// Sheet 3..14: Jan–Dec — full day-grouped item detail per month
+// ─────────────────────────────────────────────────────────────────────────────
+function buildYearlyWorkbook(XLSX, expenses, year, catIcons) {
+  const wb = XLSX.utils.book_new();
+  const yr = Number(year);
+
+  const inYear = expenses
+    .filter(e => new Date(e.timestamp).getFullYear()===yr)
+    .sort((a,b)=>a.timestamp-b.timestamp);
+
+  const grandExp = inYear.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
+  const grandInc = inYear.filter(e=>e.type==="income").reduce((s,e)=>s+e.amount,0);
+  const allCats  = [...new Set(inYear.map(e=>e.category))].sort();
+
+  // Category × month matrix
+  const matrix = {};
+  for (const cat of allCats) { matrix[cat]={}; for(let m=1;m<=12;m++) matrix[cat][m]={expense:0,income:0,count:0}; }
+  const monthTotals = {};
+  for (let m=1;m<=12;m++) monthTotals[m]={expense:0,income:0,count:0};
+  for (const e of inYear) {
+    const m = new Date(e.timestamp).getMonth()+1;
+    if (matrix[e.category]) { matrix[e.category][m][e.type]+=e.amount; matrix[e.category][m].count++; }
+    monthTotals[m][e.type]+=e.amount; monthTotals[m].count++;
+  }
+
+  // ── SHEET 1: Pivot Summary ──────────────────────────────────────────────────
+  const pivotRows = [
+    [`Yearly Expense Report \u2014 ${year}`, ...Array(14).fill("")],
+    [],
+    [`Generated: ${new Date().toLocaleDateString("en-IN")}`, "", `Total Records: ${inYear.length}`, "", `Total Spend: ${fmtINR(grandExp)}`, "", `Net: ${fmtINR(grandInc-grandExp)}`, ...Array(8).fill("")],
+    [],
+    ["Category", ...MONTH_NAMES, "Annual Total", "% of Spend"],
+  ];
+  for (const cat of allCats.sort((a,b)=>(Object.values(matrix[b]||{}).reduce((s,v)=>s+v.expense,0))-(Object.values(matrix[a]||{}).reduce((s,v)=>s+v.expense,0)))) {
+    const row = [`${catIcons?.[cat]||""} ${cat}`];
+    let catTotal=0;
+    for (let m=1;m<=12;m++) { const v=matrix[cat][m].expense; row.push(v>0?v:""); catTotal+=v; }
+    row.push(catTotal>0?catTotal:"");
+    row.push(grandExp>0?((catTotal/grandExp)*100).toFixed(1)+"%":"0%");
+    pivotRows.push(row);
+  }
+  pivotRows.push([]);
+  const totalRow=["MONTHLY EXPENSE TOTAL"]; for(let m=1;m<=12;m++) totalRow.push(monthTotals[m].expense||""); totalRow.push(grandExp,"100%"); pivotRows.push(totalRow);
+  pivotRows.push([]);
+  const incRow=["Monthly Income"]; for(let m=1;m<=12;m++) incRow.push(monthTotals[m].income||""); incRow.push(grandInc,""); pivotRows.push(incRow);
+  const netRow=["Monthly Net"]; for(let m=1;m<=12;m++){const n=monthTotals[m].income-monthTotals[m].expense;netRow.push(n!==0?n:"");} netRow.push(grandInc-grandExp,""); pivotRows.push(netRow);
+
+  const wsPivot = XLSX.utils.aoa_to_sheet(pivotRows);
+  wsPivot["!cols"] = [{wch:26},...Array(12).fill({wch:10}),{wch:14},{wch:12}];
+  wsPivot["!merges"] = [{s:{r:0,c:0},e:{r:0,c:14}},{s:{r:2,c:0},e:{r:2,c:1}},{s:{r:2,c:2},e:{r:2,c:3}},{s:{r:2,c:4},e:{r:2,c:5}}];
+  styleCell(wsPivot,"A1",STYLE.title);
+  ["A","B","C","D","E","F","G","H","I","J","K","L","M","N","O"].forEach(col=>styleCell(wsPivot,`${col}5`,STYLE.header));
+  XLSX.utils.book_append_sheet(wb, wsPivot, "Summary");
+
+  // ── SHEET 2: By Category (all items for the year) ───────────────────────────
+  const catAnnual={};
+  for (const cat of allCats) catAnnual[cat]={items:[],totalExp:0,totalInc:0};
+  for (const e of inYear) { if(catAnnual[e.category]){ catAnnual[e.category].items.push(e); if(e.type==="expense") catAnnual[e.category].totalExp+=e.amount; else catAnnual[e.category].totalInc+=e.amount; } }
+
+  const catYrRows = [
+    [`Category Detail \u2014 ${year}`, "", "", "", "", "", ""],
+    [],
+  ];
+  for (const cat of Object.keys(catAnnual).sort((a,b)=>catAnnual[b].totalExp-catAnnual[a].totalExp)) {
+    const v=catAnnual[cat]; const icon=catIcons?.[cat]||"";
+    catYrRows.push([`${icon} ${cat}`, "", `Items: ${v.items.length}`, `Spent: ${fmtINR(v.totalExp)}`, `Received: ${fmtINR(v.totalInc)}`, `Net: ${fmtINR(v.totalInc-v.totalExp)}`, ""]);
+    catYrRows.push(["Date","Day","Month","Item / Description","Reason","Account","Amount (\u20B9)"]);
+    for (const e of v.items.sort((a,b)=>a.timestamp-b.timestamp)) {
+      catYrRows.push([
+        fmtDate(e.timestamp), fmtDay(e.timestamp),
+        MONTH_NAMES[new Date(e.timestamp).getMonth()],
+        e.description||"\u2014",
+        e.reason||"", e.accountName||"",
+        e.type==="expense"?-e.amount:e.amount,
+      ]);
+    }
+    catYrRows.push(["","","","","","Total", v.totalInc-v.totalExp]);
+    catYrRows.push([]);
+  }
+  const wsCatYr = XLSX.utils.aoa_to_sheet(catYrRows);
+  wsCatYr["!cols"]=[{wch:14},{wch:6},{wch:8},{wch:34},{wch:28},{wch:14},{wch:14}];
+  wsCatYr["!merges"]=[{s:{r:0,c:0},e:{r:0,c:6}}];
+  styleCell(wsCatYr,"A1",STYLE.title);
+  XLSX.utils.book_append_sheet(wb,wsCatYr,"By Category");
+
+  // ── SHEETS 3..14: Monthly detail (day-grouped) ──────────────────────────────
+  for (let m=1;m<=12;m++) {
+    const monthItems = inYear.filter(e=>new Date(e.timestamp).getMonth()+1===m).sort((a,b)=>a.timestamp-b.timestamp);
+    if (!monthItems.length) continue;
+    const mExp=monthItems.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
+    const mInc=monthItems.filter(e=>e.type==="income").reduce((s,e)=>s+e.amount,0);
+    const mName=MONTH_NAMES[m-1];
+
+    const mRows = [
+      [`${mName} ${year} \u2014 Expense Detail`, "", "", "", "", "", "", ""],
+      [],
+      [`Records: ${monthItems.length}`, "", `Spent: ${fmtINR(mExp)}`, "", `Received: ${fmtINR(mInc)}`, "", `Net: ${fmtINR(mInc-mExp)}`, ""],
+      [],
+      ["Date","Day","Time","Category","Item / Description","Reason","Account","Amount (\u20B9)"],
+    ];
+
+    const byDay={};
+    for (const e of monthItems) { const dk=fmtDate(e.timestamp); if(!byDay[dk]) byDay[dk]=[]; byDay[dk].push(e); }
+
+    for (const [day,dayItems] of Object.entries(byDay).sort()) {
+      const dExp=dayItems.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
+      mRows.push([day, fmtDay(new Date(dayItems[0].timestamp)), "", `${dayItems.length} item(s)`, "", dExp>0?`Day spend: ${fmtINR(dExp)}`:"", "", ""]);
+      for (const e of dayItems.sort((a,b)=>a.timestamp-b.timestamp)) {
+        mRows.push([
+          fmtDate(e.timestamp), fmtDay(e.timestamp), fmtTime(e.timestamp),
+          `${catIcons?.[e.category]||""} ${e.category}`,
+          e.description||"\u2014",
+          e.reason||"", e.accountName||"",
+          e.type==="expense"?-e.amount:e.amount,
+        ]);
+      }
+      mRows.push([]);
+    }
+    mRows.push([]); mRows.push(["","","","","","","Total Expense",-mExp]); mRows.push(["","","","","","","Total Income",mInc]); mRows.push(["","","","","","","Net",mInc-mExp]);
+
+    const wsM = XLSX.utils.aoa_to_sheet(mRows);
+    wsM["!cols"]=[{wch:14},{wch:6},{wch:10},{wch:18},{wch:34},{wch:28},{wch:14},{wch:14}];
+    wsM["!merges"]=[{s:{r:0,c:0},e:{r:0,c:7}},{s:{r:2,c:0},e:{r:2,c:1}},{s:{r:2,c:2},e:{r:2,c:3}},{s:{r:2,c:4},e:{r:2,c:5}}];
+    styleCell(wsM,"A1",STYLE.title);
+    ["A5","B5","C5","D5","E5","F5","G5","H5"].forEach(ref=>styleCell(wsM,ref,STYLE.header));
+    XLSX.utils.book_append_sheet(wb,wsM,mName);
+  }
+
+  return wb;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MAIN COMPONENT
+// ─────────────────────────────────────────────────────────────────────────────
+function CategoryBreakdown({ expenses, catIcons, catColors }) {
+  const [period,      setPeriod]      = React.useState("month");
+  const [selectedCat, setSelectedCat] = React.useState("all");
+  const [filterMode,  setFilterMode]  = React.useState("period");
+  const [pickerYear,  setPickerYear]  = React.useState(() => new Date().getFullYear());
+  const [pickerMonth, setPickerMonth] = React.useState(() => new Date().getMonth()+1);
+  const [exporting,   setExporting]   = React.useState(false);
+  const [exportMode,  setExportMode]  = React.useState("monthly");
+  const [showExport,  setShowExport]  = React.useState(false);
+  const [exportYear,  setExportYear]  = React.useState(() => new Date().getFullYear());
+  const [exportMonth, setExportMonth] = React.useState(() => new Date().getMonth()+1);
+
+  const availableYears = React.useMemo(() => {
+    const ys = new Set(expenses.map(e=>new Date(e.timestamp).getFullYear()));
+    return [...ys].sort((a,b)=>b-a);
+  }, [expenses]);
+
+  const fmt    = n => "\u20B9"+Number(n).toLocaleString("en-IN",{maximumFractionDigits:2});
+  const dateIN = d => new Date(d).toLocaleDateString("en-IN",{day:"2-digit",month:"2-digit",year:"numeric"});
+  const timeIN = d => new Date(d).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",hour12:true});
+
+  const filtered = React.useMemo(()=>{
+    if (filterMode==="custom") {
+      return expenses.filter(e=>{ const d=new Date(e.timestamp); return e.type==="expense"&&d.getFullYear()===pickerYear&&(d.getMonth()+1)===pickerMonth; });
+    }
+    const ist=new Date(Date.now()+5.5*3600000);
+    const isoDate=d=>{const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;};
+    const weekKey=d=>{const dt=new Date(d);const day=dt.getDay();const diff=dt.getDate()-day+(day===0?-6:1);return isoDate(new Date(new Date(d).setDate(diff)));};
+    const monthKey=d=>{const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}`;};
+    const yearKey=d=>String(new Date(d).getFullYear());
+    const today=isoDate(ist),thisWeek=weekKey(ist),thisMonth=monthKey(ist),thisYear=yearKey(ist);
+    return expenses.filter(e=>{
+      if(e.type!=="expense") return false;
+      if(period==="day")   return isoDate(e.timestamp)===today;
+      if(period==="week")  return weekKey(e.timestamp)===thisWeek;
+      if(period==="month") return monthKey(e.timestamp)===thisMonth;
+      if(period==="year")  return yearKey(e.timestamp)===thisYear;
       return true;
     });
-  }, [expenses, period]);
+  },[expenses,period,filterMode,pickerYear,pickerMonth]);
 
-  const byCategory = useMemo(() => {
-    const map = {};
-    for (const e of filtered) {
-      if (!map[e.category]) map[e.category] = { total: 0, count: 0, items: [] };
-      map[e.category].total += e.amount;
-      map[e.category].count++;
-      map[e.category].items.push(e);
-    }
-    return Object.entries(map).sort((a, b) => b[1].total - a[1].total);
-  }, [filtered]);
+  const byCategory = React.useMemo(()=>{
+    const map={};
+    for(const e of filtered){ if(!map[e.category]) map[e.category]={total:0,count:0,items:[]}; map[e.category].total+=e.amount; map[e.category].count++; map[e.category].items.push(e); }
+    return Object.entries(map).sort((a,b)=>b[1].total-a[1].total);
+  },[filtered]);
 
-  const totalExp = byCategory.reduce((s, [, v]) => s + v.total, 0);
-  const maxVal   = byCategory.length ? byCategory[0][1].total : 1;
-  const periodLabel = { day: "Today", week: "This Week", month: "This Month", year: "This Year" }[period];
+  const totalExp=byCategory.reduce((s,[,v])=>s+v.total,0);
+  const maxVal=byCategory.length?byCategory[0][1].total:1;
+  const periodLabel=filterMode==="custom"?`${MONTH_NAMES[pickerMonth-1]} ${pickerYear}`:{day:"Today",week:"This Week",month:"This Month",year:"This Year"}[period];
+  const catDetail=React.useMemo(()=>{ if(selectedCat==="all") return null; const found=byCategory.find(([cat])=>cat===selectedCat); return found?found[1]:null; },[selectedCat,byCategory]);
 
-  const catDetail = useMemo(() => {
-    if (selectedCat === "all") return null;
-    const found = byCategory.find(([cat]) => cat === selectedCat);
-    return found ? found[1] : null;
-  }, [selectedCat, byCategory]);
+  React.useEffect(()=>{ if(selectedCat!=="all"&&!byCategory.some(([cat])=>cat===selectedCat)) setSelectedCat("all"); },[byCategory,selectedCat]);
 
-  useEffect(() => {
-    if (selectedCat !== "all") {
-      const exists = byCategory.some(([cat]) => cat === selectedCat);
-      if (!exists) setSelectedCat("all");
-    }
-  }, [byCategory, selectedCat]);
-
-  const availableCategories = byCategory.map(([cat]) => cat);
+  const handleExport=async()=>{
+    setExporting(true);
+    try {
+      const XLSX=await loadSheetJS();
+      let wb,filename;
+      if(exportMode==="monthly"){
+        const mk=`${exportYear}-${String(exportMonth).padStart(2,"0")}`;
+        wb=buildMonthlyWorkbook(XLSX,expenses,mk,catIcons,catColors);
+        filename=`expenses_${MONTH_NAMES[exportMonth-1]}_${exportYear}.xlsx`;
+      } else {
+        wb=buildYearlyWorkbook(XLSX,expenses,exportYear,catIcons);
+        filename=`expenses_yearly_${exportYear}.xlsx`;
+      }
+      XLSX.writeFile(wb,filename);
+    } catch(err){ alert("Export failed: "+err.message); }
+    finally { setExporting(false); setShowExport(false); }
+  };
 
   return (
     <div className="et-records">
-      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
-        <div className="et-view-toggle" style={{ flex: 1 }}>
-          {[["day", "Day"], ["week", "Week"], ["month", "Month"], ["year", "Year"]].map(([v, l]) =>
-            <button key={v} className={`et-view-btn ${period === v ? "et-view-btn--active" : ""}`} onClick={() => setPeriod(v)}>{l}</button>
+      {/* ── Controls ── */}
+      <div style={{display:"flex",flexDirection:"column",gap:10}}>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+          <div className="et-view-toggle" style={{flexShrink:0}}>
+            <button className={`et-view-btn ${filterMode==="period"?"et-view-btn--active":""}`} onClick={()=>setFilterMode("period")}>Quick</button>
+            <button className={`et-view-btn ${filterMode==="custom"?"et-view-btn--active":""}`} onClick={()=>setFilterMode("custom")}>📅 Month</button>
+          </div>
+          {filterMode==="period"&&(
+            <div className="et-view-toggle">
+              {[["day","Day"],["week","Week"],["month","Month"],["year","Year"]].map(([v,l])=>
+                <button key={v} className={`et-view-btn ${period===v?"et-view-btn--active":""}`} onClick={()=>setPeriod(v)}>{l}</button>
+              )}
+            </div>
           )}
+          <button onClick={()=>setShowExport(o=>!o)} style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,padding:"5px 13px",borderRadius:20,border:"1px solid rgba(34,197,94,0.35)",background:"rgba(34,197,94,0.10)",color:"#22c55e",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",flexShrink:0}}>
+            📊 Export Excel
+          </button>
         </div>
-        {availableCategories.length > 0 && (
-          <select
-            className="et-bgt-select et-cat-filter-sel"
-            value={selectedCat}
-            onChange={e => setSelectedCat(e.target.value)}
-            style={{ minWidth: 140, maxWidth: 180 }}
-          >
+
+        {filterMode==="custom"&&(
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",padding:"10px 14px",background:"rgba(245,158,11,0.06)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10}}>
+            <span style={{fontSize:11,color:"rgba(255,255,255,0.45)",flexShrink:0}}>Show:</span>
+            <select className="et-bgt-select" value={pickerMonth} onChange={e=>setPickerMonth(Number(e.target.value))} style={{minWidth:100,padding:"5px 10px",fontSize:12}}>
+              {MONTH_NAMES.map((n,i)=><option key={i} value={i+1}>{n}</option>)}
+            </select>
+            <select className="et-bgt-select" value={pickerYear} onChange={e=>setPickerYear(Number(e.target.value))} style={{minWidth:80,padding:"5px 10px",fontSize:12}}>
+              {(availableYears.length?availableYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+            </select>
+            <span style={{fontSize:12,color:"#f59e0b",fontWeight:700,background:"rgba(245,158,11,0.12)",padding:"3px 10px",borderRadius:20,border:"1px solid rgba(245,158,11,0.25)"}}>
+              {MONTH_NAMES[pickerMonth-1]} {pickerYear}
+            </span>
+          </div>
+        )}
+
+        {byCategory.length>0&&(
+          <select className="et-bgt-select et-cat-filter-sel" value={selectedCat} onChange={e=>setSelectedCat(e.target.value)} style={{maxWidth:200,padding:"5px 12px",fontSize:11}}>
             <option value="all">All Categories</option>
-            {availableCategories.map(cat => (
-              <option key={cat} value={cat}>{catIcons[cat] || "📌"} {cat}</option>
-            ))}
+            {byCategory.map(([cat])=><option key={cat} value={cat}>{catIcons[cat]||"📌"} {cat}</option>)}
           </select>
         )}
       </div>
 
-      {byCategory.length === 0 ? (
+      {/* ── Export Panel ── */}
+      {showExport&&(
+        <div style={{background:"rgba(34,197,94,0.06)",border:"1px solid rgba(34,197,94,0.22)",borderRadius:12,padding:16,display:"flex",flexDirection:"column",gap:12,animation:"et-slide-down 0.2s ease"}}>
+          <div style={{fontSize:13,fontWeight:700,color:"#22c55e"}}>📊 Export to Excel</div>
+          <div style={{display:"flex",gap:7}}>
+            {[["monthly","📅 Monthly"],["yearly","📆 Yearly"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setExportMode(v)} style={{padding:"5px 14px",borderRadius:20,fontSize:12,fontWeight:700,border:exportMode===v?"1px solid #22c55e":"1px solid rgba(255,255,255,0.1)",background:exportMode===v?"rgba(34,197,94,0.18)":"transparent",color:exportMode===v?"#22c55e":"rgba(255,255,255,0.4)",cursor:"pointer",fontFamily:"inherit"}}>{l}</button>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+            <span style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>For:</span>
+            {exportMode==="monthly"&&(
+              <select className="et-bgt-select" value={exportMonth} onChange={e=>setExportMonth(Number(e.target.value))} style={{minWidth:100,padding:"5px 10px",fontSize:12}}>
+                {MONTH_NAMES.map((n,i)=><option key={i} value={i+1}>{n}</option>)}
+              </select>
+            )}
+            <select className="et-bgt-select" value={exportYear} onChange={e=>setExportYear(Number(e.target.value))} style={{minWidth:80,padding:"5px 10px",fontSize:12}}>
+              {(availableYears.length?availableYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>
+
+          {/* Sheets preview */}
+          <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",lineHeight:1.9,background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:9,padding:"10px 13px"}}>
+            {exportMode==="monthly"?(
+              <>
+                <div>📋 <strong style={{color:"#fff"}}>Summary</strong> — category totals, % share, grand total</div>
+                <div>📋 <strong style={{color:"#fff"}}>All Transactions</strong> — every item grouped by day with day-spend totals</div>
+                <div>📋 <strong style={{color:"#fff"}}>One sheet per category</strong> — item name · date · day · time · reason · account · amount (day-grouped, colour-coded)</div>
+              </>
+            ):(
+              <>
+                <div>📋 <strong style={{color:"#fff"}}>Summary</strong> — category × month pivot table with annual totals</div>
+                <div>📋 <strong style={{color:"#fff"}}>By Category</strong> — all year's items grouped per category with dates</div>
+                <div>📋 <strong style={{color:"#fff"}}>Jan–Dec sheets</strong> — full item detail per month (day-grouped, category + name + time)</div>
+              </>
+            )}
+          </div>
+
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={handleExport} disabled={exporting} style={{flex:1,padding:10,borderRadius:9,border:"none",background:exporting?"#333":"linear-gradient(135deg,#22c55e,#16a34a)",color:"#fff",fontWeight:700,fontSize:13,cursor:exporting?"not-allowed":"pointer",fontFamily:"inherit"}}>
+              {exporting?"⏳ Building…":"⬇️ Download .xlsx"}
+            </button>
+            <button onClick={()=>setShowExport(false)} style={{padding:"10px 16px",borderRadius:9,border:"1px solid rgba(255,255,255,0.1)",background:"transparent",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:13,fontFamily:"inherit"}}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Main content ── */}
+      {byCategory.length===0?(
         <div className="et-no-data">No expenses for {periodLabel.toLowerCase()}. Start tracking! 💬</div>
-      ) : selectedCat !== "all" && catDetail ? (
+      ):selectedCat!=="all"&&catDetail?(
         <div className="et-catdetail">
           <div className="et-catdetail-header">
-            <div className="et-catbreak-icon" style={{ background: (catColors[selectedCat] || "#6b7280") + "22", color: catColors[selectedCat] || "#6b7280", width: 44, height: 44, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}>
-              {catIcons[selectedCat] || "📌"}
+            <div className="et-catbreak-icon" style={{background:(catColors[selectedCat]||"#6b7280")+"22",color:catColors[selectedCat]||"#6b7280",width:44,height:44,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>{catIcons[selectedCat]||"📌"}</div>
+            <div style={{flex:1}}>
+              <div style={{fontSize:16,fontWeight:700,color:"#fff"}}>{selectedCat}</div>
+              <div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>{catDetail.count} transaction{catDetail.count!==1?"s":""} · {periodLabel}</div>
             </div>
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>{selectedCat}</div>
-              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>{catDetail.count} transaction{catDetail.count !== 1 ? "s" : ""} · {periodLabel}</div>
-            </div>
-            <div style={{ textAlign: "right" }}>
-              <div style={{ fontSize: 20, fontWeight: 700, color: catColors[selectedCat] || "#6b7280", fontFamily: "'JetBrains Mono',monospace" }}>{fmt(catDetail.total)}</div>
-              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{totalExp > 0 ? Math.round(catDetail.total / totalExp * 100) : 0}% of total</div>
+            <div style={{textAlign:"right"}}>
+              <div style={{fontSize:20,fontWeight:700,color:catColors[selectedCat]||"#6b7280",fontFamily:"'JetBrains Mono',monospace"}}>{fmt(catDetail.total)}</div>
+              <div style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{totalExp>0?Math.round(catDetail.total/totalExp*100):0}% of total</div>
             </div>
           </div>
           <div className="et-catdetail-list">
-            {catDetail.items.sort((a, b) => b.timestamp - a.timestamp).map(e => (
+            {catDetail.items.sort((a,b)=>b.timestamp-a.timestamp).map(e=>(
               <div key={e.id} className="et-catdetail-item">
                 <div className="et-catdetail-item-left">
-                  <span className="et-catdetail-item-desc">{e.description || "—"}</span>
-                  {e.reason && <span className="et-catdetail-item-reason">{e.reason}</span>}
+                  <span className="et-catdetail-item-desc">{e.description||"—"}</span>
+                  {e.reason&&<span className="et-catdetail-item-reason">{e.reason}</span>}
                 </div>
                 <div className="et-catdetail-item-right">
-                  <span className="et-catdetail-item-amt" style={{ color: catColors[selectedCat] || "#6b7280" }}>{fmt(e.amount)}</span>
+                  <span className="et-catdetail-item-amt" style={{color:catColors[selectedCat]||"#6b7280"}}>{fmt(e.amount)}</span>
                   <span className="et-catdetail-item-date">{dateIN(e.timestamp)} {timeIN(e.timestamp)}</span>
                 </div>
               </div>
             ))}
           </div>
         </div>
-      ) : (
+      ):(
         <>
           <div className="et-catbreak-total">
             <span className="et-catbreak-total-label">{periodLabel} Total Spend</span>
             <span className="et-catbreak-total-val">{fmt(totalExp)}</span>
           </div>
           <div className="et-catbreak-grid">
-            {byCategory.map(([cat, data]) => {
-              const pct = Math.round(data.total / totalExp * 100), barW = Math.max(4, Math.round(data.total / maxVal * 100));
-              const color = catColors[cat] || "#6b7280", icon = catIcons[cat] || "📌";
-              return (
-                <div key={cat} className="et-catbreak-card" onClick={() => setSelectedCat(cat)} style={{ cursor: "pointer" }}>
+            {byCategory.map(([cat,data])=>{
+              const pct=Math.round(data.total/totalExp*100),barW=Math.max(4,Math.round(data.total/maxVal*100));
+              const color=catColors[cat]||"#6b7280",icon=catIcons[cat]||"📌";
+              return(
+                <div key={cat} className="et-catbreak-card" onClick={()=>setSelectedCat(cat)} style={{cursor:"pointer"}}>
                   <div className="et-catbreak-card-top">
-                    <div className="et-catbreak-icon" style={{ background: color + "22", color }}>{icon}</div>
-                    <div className="et-catbreak-info"><span className="et-catbreak-name">{cat}</span><span className="et-catbreak-count">{data.count} txn{data.count !== 1 ? "s" : ""}</span></div>
-                    <div className="et-catbreak-right"><span className="et-catbreak-amt" style={{ color }}>{fmt(data.total)}</span><span className="et-catbreak-pct">{pct}%</span></div>
-                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.25)", marginLeft: 4 }}>›</span>
+                    <div className="et-catbreak-icon" style={{background:color+"22",color}}>{icon}</div>
+                    <div className="et-catbreak-info"><span className="et-catbreak-name">{cat}</span><span className="et-catbreak-count">{data.count} txn{data.count!==1?"s":""}</span></div>
+                    <div className="et-catbreak-right"><span className="et-catbreak-amt" style={{color}}>{fmt(data.total)}</span><span className="et-catbreak-pct">{pct}%</span></div>
+                    <span style={{fontSize:12,color:"rgba(255,255,255,0.25)",marginLeft:4}}>›</span>
                   </div>
-                  <div className="et-catbreak-bar-wrap"><div className="et-catbreak-bar" style={{ width: barW + "%", background: `linear-gradient(90deg,${color},${color}88)` }} /></div>
+                  <div className="et-catbreak-bar-wrap"><div className="et-catbreak-bar" style={{width:barW+"%",background:`linear-gradient(90deg,${color},${color}88)`}}/></div>
                   <div className="et-catbreak-items">
-                    {data.items.slice(0, 3).map(e => <div key={e.id} className="et-catbreak-item"><span className="et-catbreak-item-desc">{e.description || "—"}</span><span className="et-catbreak-item-date">{dateIN(e.timestamp)}</span><span className="et-catbreak-item-amt">{fmt(e.amount)}</span></div>)}
-                    {data.items.length > 3 && <div className="et-catbreak-more">+{data.items.length - 3} more · tap card to view all</div>}
+                    {data.items.slice(0,3).map(e=><div key={e.id} className="et-catbreak-item"><span className="et-catbreak-item-desc">{e.description||"—"}</span><span className="et-catbreak-item-date">{dateIN(e.timestamp)}</span><span className="et-catbreak-item-amt">{fmt(e.amount)}</span></div>)}
+                    {data.items.length>3&&<div className="et-catbreak-more">+{data.items.length-3} more · tap card to view all</div>}
                   </div>
                 </div>
               );
@@ -1288,15 +1793,15 @@ function CategoryBreakdown({ expenses, catIcons, catColors }) {
           <div className="et-catbreak-summary">
             <p className="et-catbreak-summary-title">Category Share</p>
             <div className="et-catbreak-pies">
-              {byCategory.map(([cat, data]) => { const pct = Math.round(data.total / totalExp * 100), color = catColors[cat] || "#6b7280"; return (
-                <div key={cat} className="et-catbreak-pie-row" onClick={() => setSelectedCat(cat)} style={{ cursor: "pointer" }}>
-                  <div className="et-catbreak-pie-dot" style={{ background: color }} />
-                  <span className="et-catbreak-pie-name">{catIcons[cat] || "📌"} {cat}</span>
-                  <div className="et-catbreak-pie-bar-wrap"><div className="et-catbreak-pie-bar" style={{ width: pct + "%", background: color }} /></div>
-                  <span className="et-catbreak-pie-pct" style={{ color }}>{pct}%</span>
+              {byCategory.map(([cat,data])=>{const pct=Math.round(data.total/totalExp*100),color=catColors[cat]||"#6b7280";return(
+                <div key={cat} className="et-catbreak-pie-row" onClick={()=>setSelectedCat(cat)} style={{cursor:"pointer"}}>
+                  <div className="et-catbreak-pie-dot" style={{background:color}}/>
+                  <span className="et-catbreak-pie-name">{catIcons[cat]||"📌"} {cat}</span>
+                  <div className="et-catbreak-pie-bar-wrap"><div className="et-catbreak-pie-bar" style={{width:pct+"%",background:color}}/></div>
+                  <span className="et-catbreak-pie-pct" style={{color}}>{pct}%</span>
                   <span className="et-catbreak-pie-amt">{fmt(data.total)}</span>
                 </div>
-              ); })}
+              );})}
             </div>
           </div>
         </>
