@@ -751,7 +751,7 @@ function CategoryModal({ customCats, catIcons, catColors, onClose, onSave }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // ── Accounts Tab
 // ══════════════════════════════════════════════════════════════════════════════
-function AccountsTab({ budget, setBudget, showToast, onRecordAccountTransaction }) {
+function AccountsTab({ budget, setBudget, showToast, onRecordAccountTransaction, onDeleteAccount }) {
   const curMonth = currentMonthKey();
 
   const ensureMonth = useCallback((bgt) => {
@@ -904,20 +904,21 @@ function AccountsTab({ budget, setBudget, showToast, onRecordAccountTransaction 
   };
 
   const handleDeleteAccount = (accId) => {
-    setBudget(prev => {
-      let upd = {
-        ...prev,
-        accounts: prev.accounts.filter(a => a.id !== accId),
-        months: Object.fromEntries(Object.entries(prev.months).map(([mk, mv]) => [mk, { ...mv, accounts: mv.accounts.filter(a => a.id !== accId) }]))
-      };
-      if (upd.defaultAccountId === accId) {
-        upd = { ...upd, defaultAccountId: upd.accounts[0]?.id || null };
-      }
-      return upd;
-    });
-    setDelAcc(null);
-    showToast("Account removed.", "info");
-  };
+  setBudget(prev => {
+    let upd = {
+      ...prev,
+      accounts: prev.accounts.filter(a => a.id !== accId),
+      months: Object.fromEntries(Object.entries(prev.months).map(([mk, mv]) => [mk, { ...mv, accounts: mv.accounts.filter(a => a.id !== accId) }]))
+    };
+    if (upd.defaultAccountId === accId) {
+      upd = { ...upd, defaultAccountId: upd.accounts[0]?.id || null };
+    }
+    return upd;
+  });
+  onDeleteAccount(accId);  // ← ADD THIS LINE
+  setDelAcc(null);
+  showToast("Account removed. Linked transactions also deleted.", "info");
+};
 
   const transfers = budget.months[curMonth]?.transfers || [];
   const accName = id => budget.accounts.find(a => a.id === id)?.name || "?";
@@ -1141,7 +1142,7 @@ function AccountsTab({ budget, setBudget, showToast, onRecordAccountTransaction 
           <div className="et-modal" onClick={e => e.stopPropagation()}>
             <div className="et-modal-icon">🗑️</div>
             <h3>Remove Account?</h3>
-            <p>This removes <strong>{budget.accounts.find(a => a.id === delAcc)?.name}</strong>. Cannot be undone.</p>
+            <p>This removes <strong>{budget.accounts.find(a => a.id === delAcc)?.name}</strong> and <strong>all its linked transactions</strong> from Records. Cannot be undone.</p>
             <div className="et-modal-actions">
               <button className="et-modal-cancel" onClick={() => setDelAcc(null)}>Cancel</button>
               <button className="et-modal-confirm" onClick={() => handleDeleteAccount(delAcc)}>Remove</button>
@@ -2392,14 +2393,13 @@ const handleCloudSuccess = useCallback((result) => {
           if (p.action === "create_account" && p.name) {
             const newBal = Number(p.currentBalance) || 0;
             const curMonth = currentMonthKey();
+            let createdAccId = null;  // ← track the new id
 
             setBudget(prev => {
-              // ── GUARD: check if account with same name already exists (case-insensitive) ──
               const duplicate = prev.accounts.find(
                 a => a.name.toLowerCase().trim() === p.name.toLowerCase().trim()
               );
               if (duplicate) {
-                // Don't create — top up the existing one instead
                 if (newBal > 0) {
                   const updAccounts = prev.accounts.map(a =>
                     a.id === duplicate.id ? { ...a, currentBalance: a.currentBalance + newBal } : a
@@ -2409,7 +2409,6 @@ const handleCloudSuccess = useCallback((result) => {
                   const newMonthAccounts = monthAccExists
                     ? m.accounts.map(a => a.id === duplicate.id ? { ...a, currentBalance: a.currentBalance + newBal } : a)
                     : [...m.accounts, { id: duplicate.id, currentBalance: duplicate.currentBalance + newBal, carryover: 0 }];
-                  // Log as income with a timeout so setBudget doesn't conflict
                   setTimeout(() => {
                     handleRecordAccountTransaction({
                       amount: newBal,
@@ -2427,11 +2426,12 @@ const handleCloudSuccess = useCallback((result) => {
                     months: { ...prev.months, [curMonth]: { ...m, accounts: newMonthAccounts } },
                   };
                 }
-                return prev; // same name, zero balance — do nothing
+                return prev;
               }
 
               // No duplicate — create fresh
               const newAccId = uid();
+              createdAccId = newAccId;  // ← store for use below
               const newAcc = {
                 id: newAccId,
                 name: p.name,
@@ -2473,6 +2473,12 @@ const handleCloudSuccess = useCallback((result) => {
                 },
               };
             });
+
+            // ← KEY FIX: cancel the expense_data block if it's just recording the same initial balance
+            if (newExpense && newExpense.type === "income" && newExpense.amount === newBal) {
+              newExpense = null;  // discard the duplicate
+              setExpenses(prev => prev.slice(1)); // remove the one already added above
+            }
           }
         } catch (e) {
           console.warn("account_ui_action parse error", e);
@@ -2839,7 +2845,14 @@ const handleCloudSuccess = useCallback((result) => {
             )}
 
             {tab==="catbreak"&&<CategoryBreakdown expenses={expenses} catIcons={catIcons} catColors={catColors}/>}
-            {tab==="accounts"&&<AccountsTab budget={budget} setBudget={setBudget} showToast={showToast} onRecordAccountTransaction={handleRecordAccountTransaction}/>}
+            {/* {tab==="accounts"&&<AccountsTab budget={budget} setBudget={setBudget} showToast={showToast} onRecordAccountTransaction={handleRecordAccountTransaction}/>} */}
+            {tab==="accounts"&&<AccountsTab 
+                budget={budget} 
+                setBudget={setBudget} 
+                showToast={showToast} 
+                onRecordAccountTransaction={handleRecordAccountTransaction}
+                onDeleteAccount={(accId) => setExpenses(prev => prev.filter(e => e.accountId !== accId))} 
+              />}
 
             {tab==="compare"&&(
               <div className="et-records">
