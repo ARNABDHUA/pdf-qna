@@ -961,13 +961,50 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     } catch(err) { localToast("⚠️ "+err.message,"error"); }
   }, [activeGroup, username, password, localToast]);
 
-  const handleSettleAll = useCallback(async (memberName, totalAmount) => {
-    const unsettled=groupExpenses.filter(e=>e.splits?.some(s=>s.username===memberName&&!s.paid&&e.paid_by===username));
-    for(const e of unsettled)for(const s of e.splits){if(s.username===memberName&&!s.paid){try{await handleSettleShare(e.expense_id,memberName,s.share);}catch{}}}
-    if(onRecordTransaction)onRecordTransaction({amount:totalAmount,category:"Other",description:`${memberName} settled all dues`,reason:`Group: ${activeGroup.name} — full settlement`,type:"income",accountId:budget?.defaultAccountId||null,accountName:budget?.accounts?.find(a=>a.id===budget?.defaultAccountId)?.name||null});
-    localToast(`✅ Settled ${fmt(totalAmount)} from ${memberName} · added to Records`,"success");
-    setSettleAllModal(null);
-  }, [groupExpenses, username, handleSettleShare, onRecordTransaction, activeGroup, budget, localToast]);
+  // const handleSettleAll = useCallback(async (memberName, totalAmount) => {
+  //   const unsettled=groupExpenses.filter(e=>e.splits?.some(s=>s.username===memberName&&!s.paid&&e.paid_by===username));
+  //   for(const e of unsettled)for(const s of e.splits){if(s.username===memberName&&!s.paid){try{await handleSettleShare(e.expense_id,memberName,s.share);}catch{}}}
+  //   if(onRecordTransaction)onRecordTransaction({amount:totalAmount,category:"Other",description:`${memberName} settled all dues`,reason:`Group: ${activeGroup.name} — full settlement`,type:"income",accountId:budget?.defaultAccountId||null,accountName:budget?.accounts?.find(a=>a.id===budget?.defaultAccountId)?.name||null});
+  //   localToast(`✅ Settled ${fmt(totalAmount)} from ${memberName} · added to Records`,"success");
+  //   setSettleAllModal(null);
+  // }, [groupExpenses, username, handleSettleShare, onRecordTransaction, activeGroup, budget, localToast]);
+
+  // NEW — settles ALL pending splits between you and memberName in BOTH directions
+const handleSettleAll = useCallback(async (memberName, totalAmount) => {
+  // Direction 1: expenses YOU paid, where memberName still owes you
+  const youPaid = groupExpenses.filter(e =>
+    e.paid_by === username &&
+    e.splits?.some(s => s.username === memberName && !s.paid)
+  );
+  for (const e of youPaid)
+    for (const s of e.splits)
+      if (s.username === memberName && !s.paid)
+        try { await handleSettleShare(e.expense_id, memberName, s.share); } catch {}
+
+  // Direction 2: expenses MEMBER paid, where YOUR split is still pending
+  const theyPaid = groupExpenses.filter(e =>
+    e.paid_by === memberName &&
+    e.splits?.some(s => s.username === username && !s.paid)
+  );
+  for (const e of theyPaid)
+    for (const s of e.splits)
+      if (s.username === username && !s.paid)
+        try { await handleSettleShare(e.expense_id, username, s.share); } catch {}
+
+  if (onRecordTransaction)
+    onRecordTransaction({
+      amount: totalAmount,
+      category: "Other",
+      description: `${memberName} settled all dues`,
+      reason: `Group: ${activeGroup.name} — full settlement`,
+      type: "income",
+      accountId: budget?.defaultAccountId || null,
+      accountName: budget?.accounts?.find(a => a.id === budget?.defaultAccountId)?.name || null,
+    });
+
+  localToast(`✅ Settled all dues with ${memberName} · added to Records`, "success");
+  setSettleAllModal(null);
+}, [groupExpenses, username, handleSettleShare, onRecordTransaction, activeGroup, budget, localToast]);
 
   const handlePayAndSave = useCallback((personName, amount) => {
     if(onRecordTransaction)onRecordTransaction({amount,category:"Other",description:`Paid ${personName} — group settlement`,reason:`Group: ${activeGroup?.name||"group"} — you paid your share`,type:"expense",accountId:budget?.defaultAccountId||null,accountName:budget?.accounts?.find(a=>a.id===budget?.defaultAccountId)?.name||null});
@@ -1181,7 +1218,7 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
               </div>
             )}
 
-            {settleAllModal&&(
+            {/* {settleAllModal&&(
               <div className="et-modal-overlay" onClick={()=>setSettleAllModal(null)}>
                 <div className="et-modal" onClick={e=>e.stopPropagation()}>
                   <div className="et-modal-icon">💰</div><h3>Settle All for {settleAllModal.name}?</h3>
@@ -1189,6 +1226,33 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
                   <div className="et-modal-actions">
                     <button className="et-modal-cancel" onClick={()=>setSettleAllModal(null)}>Cancel</button>
                     <button className="et-modal-confirm" style={{background:"linear-gradient(135deg,#22c55e,#16a34a)"}} onClick={()=>handleSettleAll(settleAllModal.name,settleAllModal.amount)}>✓ Settle All {fmt(settleAllModal.amount)}</button>
+                  </div>
+                </div>
+              </div>
+            )} */}
+
+            {settleAllModal && (
+              <div className="et-modal-overlay" onClick={() => setSettleAllModal(null)}>
+                <div className="et-modal" onClick={e => e.stopPropagation()}>
+                  <div className="et-modal-icon">💰</div>
+                  <h3>Settle All with {settleAllModal.name}?</h3>
+                  <p>
+                    This will mark <strong style={{color:"#22c55e"}}>all pending splits</strong> between 
+                    you and <strong style={{color:"#f59e0b"}}>{settleAllModal.name}</strong> as settled 
+                    in both directions — clearing the net balance completely.
+                    <br/><br/>
+                    Net amount <strong style={{color:"#22c55e"}}>{fmt(settleAllModal.amount)}</strong> will 
+                    be recorded as income.
+                  </p>
+                  <div className="et-modal-actions">
+                    <button className="et-modal-cancel" onClick={() => setSettleAllModal(null)}>Cancel</button>
+                    <button
+                      className="et-modal-confirm"
+                      style={{background: "linear-gradient(135deg,#22c55e,#16a34a)"}}
+                      onClick={() => handleSettleAll(settleAllModal.name, settleAllModal.amount)}
+                    >
+                      ✓ Settle All {fmt(settleAllModal.amount)}
+                    </button>
                   </div>
                 </div>
               </div>
