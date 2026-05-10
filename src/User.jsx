@@ -293,8 +293,9 @@ function TypingDots() {
 
 // ── Session Panel ─────────────────────────────────────────────────────────────
 function SessionPanel({ sessionList, activeSessionId, onCreate, onSwitch, onRename, onDelete, onClearAll }) {
-  const [editingId, setEditingId] = useState(null);
-  const [editVal,   setEditVal]   = useState("");
+  const [editingId,      setEditingId]      = useState(null);
+  const [editVal,        setEditVal]        = useState("");
+  const [confirmDelete,  setConfirmDelete]  = useState(null); // { id, name }
   return (
     <div className="session-panel">
       <div className="session-panel__header">
@@ -316,7 +317,10 @@ function SessionPanel({ sessionList, activeSessionId, onCreate, onSwitch, onRena
                 <span className="session-card__name" title={s.name}>{s.name}</span>
                 <div className="session-card__actions">
                   <button className="session-action-btn" onClick={e => { e.stopPropagation(); setEditingId(s.id); setEditVal(s.name); }}><Icon.Edit /></button>
-                  <button className="session-action-btn session-action-btn--del" onClick={e => { e.stopPropagation(); onDelete(s.id); }}><Icon.Trash /></button>
+                  <button className="session-action-btn session-action-btn--del" onClick={e => {
+                      e.stopPropagation();
+                      setConfirmDelete({ id: s.id, name: s.name });
+                    }}><Icon.Trash /></button>
                 </div>
               </>
             )}
@@ -324,10 +328,33 @@ function SessionPanel({ sessionList, activeSessionId, onCreate, onSwitch, onRena
         ))}
       </div>
       {sessionList.length > 1 && <button className="session-clear-btn" onClick={onClearAll}>Clear all sessions</button>}
+
+      {/* ── Delete confirmation popup ── */}
+      {confirmDelete && (
+        <div className="confirm-overlay" onClick={() => setConfirmDelete(null)}>
+          <div className="confirm-popup" onClick={e => e.stopPropagation()}>
+            <div className="confirm-popup__icon">🗑️</div>
+            <h3 className="confirm-popup__title">Delete Session?</h3>
+            <p className="confirm-popup__msg">
+              <strong>"{confirmDelete.name}"</strong> will be permanently deleted.
+            </p>
+            <div className="confirm-popup__actions">
+              <button className="confirm-btn confirm-btn--cancel" onClick={() => setConfirmDelete(null)}>
+                Cancel
+              </button>
+              <button className="confirm-btn confirm-btn--delete" onClick={() => {
+                onDelete(confirmDelete.id);
+                setConfirmDelete(null);
+              }}>
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
-
 // ── Model Panel ───────────────────────────────────────────────────────────────
 function ModelPanel({ providerData, selectedProvider, selectedModel, apiKeys,
                       onProviderChange, onModelChange, onApiKeyChange, collapsed }) {
@@ -361,7 +388,18 @@ function ModelPanel({ providerData, selectedProvider, selectedModel, apiKeys,
               {showKey[selectedProvider] ? <Icon.EyeOff /> : <Icon.Eye />}
             </button>
           </div>
-          {apiKeys[selectedProvider] && <p className="api-key-set">✓ Key saved for this session</p>}
+          {apiKeys[selectedProvider] && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <p className="api-key-set" style={{ margin: 0 }}>✓ Key saved locally</p>
+              <button
+                onClick={() => onApiKeyChange(selectedProvider, "")}
+                style={{
+                  fontSize: 11, padding: "2px 8px", borderRadius: 5, border: "1px solid #f87171",
+                  background: "transparent", color: "#f87171", cursor: "pointer", fontFamily: "inherit",
+                }}
+              >Remove</button>
+            </div>
+          )}
         </div>
       )}
       {selectedProvider === "groq" && <div className="groq-badge"><Icon.Bolt /> Ultra-fast inference</div>}
@@ -499,7 +537,9 @@ export default function User() {
   const [providerData,     setProviderData]     = useState({ ollama: { models: [] } });
   const [selectedProvider, setSelectedProvider] = useState("ollama");
   const [selectedModel,    setSelectedModel]    = useState("");
-  const [apiKeys,          setApiKeys]          = useState({});
+  const [apiKeys, setApiKeys] = useState(() => {
+  try { return JSON.parse(localStorage.getItem("qna_api_keys") || "{}"); } catch { return {}; }
+  });
   const [sidebarOpen,      setSidebarOpen]      = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [mode,             setMode]             = useState("chat");
@@ -608,10 +648,14 @@ export default function User() {
     if (models.length > 0) { setSelectedModel(models[0].id); selectedModRef.current = models[0].id; }
     else { setSelectedModel(""); selectedModRef.current = ""; }
   }, [providerData]);
-
   const handleModelChange  = useCallback((id) => { setSelectedModel(id); selectedModRef.current = id; }, []);
   const handleApiKeyChange = useCallback((prov, key) => {
-    setApiKeys(prev => { const next = { ...prev, [prov]: key }; apiKeysRef.current = next; return next; });
+  setApiKeys(prev => {
+    const next = { ...prev, [prov]: key };
+    apiKeysRef.current = next;
+    try { localStorage.setItem("qna_api_keys", JSON.stringify(next)); } catch {}
+    return next;
+  });
   }, []);
 
   // ── Send ──────────────────────────────────────────────────────────────────

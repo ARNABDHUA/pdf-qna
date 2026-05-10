@@ -922,6 +922,19 @@ const CSS = `
   border: 1px solid rgba(99,102,241,0.2);
   border-radius: 4px 12px 12px 12px;
   color: #e2e8f0;
+  text-align: left;
+}
+.collab-bubble--ai pre,
+.collab-bubble--ai code,
+.collab-bubble--ai p,
+.collab-bubble--ai ul,
+.collab-bubble--ai ol,
+.collab-bubble--ai h1,
+.collab-bubble--ai h2,
+.collab-bubble--ai h3,
+.collab-bubble--ai h4,
+.collab-bubble--ai blockquote {
+  text-align: left;
 }
 .collab-bubble--me {
   background: linear-gradient(135deg, #6366f1, #7c3aed);
