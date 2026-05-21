@@ -4,6 +4,9 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import GroupSplits from "./Groupsplits";
 
+import ImportHistory from "./ImportHistory";
+
+
 // ── Storage Keys ───────────────────────────────────────────────────────────────
 const STORAGE_KEY     = "qnaai_expenses_v3";
 const API_KEYS_KEY    = "qnaai_expense_apikeys";
@@ -1045,6 +1048,23 @@ function AccountsTab({ budget, setBudget, showToast, onRecordAccountTransaction,
 
   const transfers = budget.months[curMonth]?.transfers || [];
   const accName = id => budget.accounts.find(a => a.id === id)?.name || "?";
+  const shortAmount = (num) => {
+  const abs = Math.abs(num);
+
+  if (abs >= 1000000) {
+    return (num / 1000000)
+      .toFixed(num % 1000000 === 0 ? 0 : 2)
+      .replace(/\.00$/, "") + "M";
+  }
+
+  if (abs >= 1000) {
+    return (num / 1000)
+      .toFixed(num % 1000 === 0 ? 0 : 2)
+      .replace(/\.00$/, "") + "k";
+  }
+
+  return num.toString();
+};
 
   return (
     <div className="et-records">
@@ -1072,7 +1092,7 @@ function AccountsTab({ budget, setBudget, showToast, onRecordAccountTransaction,
         <div className="et-bgt-summary">
           <div className="et-bgt-sum-item">
             <span className="et-bgt-sum-label">Total Balance</span>
-            <span className="et-bgt-sum-val" style={{ color: totalBalance >= 0 ? "#22c55e" : "#ef4444" }}>{fmt(totalBalance)}</span>
+            <span className="et-bgt-sum-val" style={{ color: totalBalance >= 0 ? "#22c55e" : "#ef4444" }}>{shortAmount(totalBalance)}</span>
           </div>
           <div className="et-bgt-sum-divider" />
           <div className="et-bgt-sum-item">
@@ -1117,7 +1137,7 @@ function AccountsTab({ budget, setBudget, showToast, onRecordAccountTransaction,
                     <span className="et-bgt-card-type" style={{ color: acc.color }}>{meta.label}</span>
                   </div>
                   <div className="et-bgt-card-right">
-                    <span className="et-bgt-card-bal" style={{ color: acc.currentBalance < 0 ? "#ef4444" : "#fff" }}>{fmt(acc.currentBalance)}</span>
+                    <span className="et-bgt-card-bal" style={{ color: acc.currentBalance < 0 ? "#ef4444" : "#fff" }}>{shortAmount(acc.currentBalance)}</span>
                     <span className="et-bgt-card-bal-label">current balance</span>
                   </div>
                   <div className="et-bgt-card-actions">
@@ -2060,6 +2080,7 @@ export default function ExpenseTracker() {
 
   const [expenses, setExpenses] = useState(()=>{ const shared=decodeShare(window.location.search); if(shared) return shared; try{return JSON.parse(localStorage.getItem(STORAGE_KEY)||"[]");}catch{return [];} });
   const [loans, setLoans] = useState(()=>{ try{return JSON.parse(localStorage.getItem(LOANS_KEY)||"[]");}catch{return [];} });
+  const [clearDataCfm, setClearDataCfm] = useState(false);
   const [budget, setBudget] = useState(()=>{
     try {
       const saved = JSON.parse(localStorage.getItem(BUDGET_KEY)||"null");
@@ -2807,6 +2828,41 @@ const handleCloudSuccess = useCallback((result) => {
             {expenses.length===0&&<p className="et-empty-hint">No expenses yet</p>}
           </div>
           <button className="et-share-btn" onClick={handleShare} disabled={expenses.length===0}>{shareState==="copied"?<><span>✓</span> Link copied!</>:<><span>⤴</span> Share Session</>}</button>
+          {toast && <Toast key={toast.id} message={toast.message} type={toast.type} onDone={() => setToast(null)} />}
+
+          <button
+            className="et-share-btn"
+            style={{ background:"linear-gradient(135deg,#ef4444,#dc2626)", marginTop:0 }}
+            onClick={() => setClearDataCfm(true)}
+          >
+            <span>🚪</span> Clear All Data
+          </button>
+          {clearDataCfm && (
+            <div className="et-modal-overlay" onClick={() => setClearDataCfm(false)}>
+              <div className="et-modal" onClick={e => e.stopPropagation()}>
+                <div className="et-modal-icon">🗑️</div>
+                <h3>Clear All Data?</h3>
+                <p>
+                  This will permanently delete all your{" "}
+                  <strong style={{ color:"#fff" }}>expenses, accounts, loans, categories</strong>{" "}
+                  and <strong style={{ color:"#fff" }}>settings</strong>{" "}
+                  from this device. This cannot be undone.
+                </p>
+                <div className="et-modal-actions">
+                  <button className="et-modal-cancel" onClick={() => setClearDataCfm(false)}>
+                    Cancel
+                  </button>
+                  <button
+                    className="et-modal-confirm"
+                    style={{ background:"linear-gradient(135deg,#ef4444,#dc2626)" }}
+                    onClick={() => { localStorage.clear(); window.location.reload(); }}
+                  >
+                    🗑️ Clear Everything
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </aside>
 
         {/* ── MAIN ── */}
@@ -2891,7 +2947,7 @@ const handleCloudSuccess = useCallback((result) => {
 
           {/* Tabs */}
           <div className="et-tabs">
-            {[["chat","💬","Chat"],["table","📊","Records"],["catbreak","🎯","By Cat"],["accounts","💳","Accounts"],["compare","📈","Compare"],["loans","🤝","Splits"],["groups","👥","Groups"]].map(([t,ic,l])=>(
+            {[["chat","💬","Chat"],["table","📊","Records"],["catbreak","🎯","By Cat"],["accounts","💳","Accounts"],["compare","📈","Compare"],["import", "📥", "Import"],["loans","🤝","Splits"],["groups","👥","Groups"]].map(([t,ic,l])=>(
               <button key={t} className={`et-tab ${tab===t?"et-tab--active":""}`} onClick={()=>{setTab(t);setSettingsOpen(false);}}>
                 <span>{ic}</span><span className="et-tab-label">{l}</span>
                 {t==="loans"&&totalLoansOwed>0&&<span className="et-tab-badge">{loans.length}</span>}
@@ -2976,6 +3032,23 @@ const handleCloudSuccess = useCallback((result) => {
                 onRecordAccountTransaction={handleRecordAccountTransaction}
                 onDeleteAccount={(accId) => setExpenses(prev => prev.filter(e => e.accountId !== accId))} 
               />}
+
+                {tab === "import" && (
+                <ImportHistory
+                      credentials={cloudCredentials}
+                      onImported={(newExpenses) => {
+                        setExpenses(prev =>
+                          Object.values(
+                            [...prev, ...newExpenses].reduce((m, e) => { m[e.id] = e; return m; }, {})
+                          ).sort((a, b) => b.timestamp - a.timestamp)
+                        );
+                        showToast(`✅ Imported ${newExpenses.length} records!`, "success");
+                      }}
+                      showToast={showToast}
+                      budget={budget}
+                      setBudget={setBudget} 
+                    />
+                  )}
 
             {tab==="compare"&&(
               <div className="et-records">
