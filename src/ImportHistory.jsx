@@ -9,24 +9,24 @@ const DEFAULT_CATEGORIES = [
 ];
 
 // ── Category mapper ────────────────────────────────────────────────────────
-const CAT_MAP = {
-  breakfast:"Food", lunch:"Food", dinner:"Food", snack:"Food",
-  beverage:"Food", "fast food":"Food", groceries:"Food", food:"Food",
-  restaurant:"Food", cafe:"Food", coffee:"Food",
-  transit:"Transport", transport:"Transport", rides:"Transport",
-  cab:"Transport", auto:"Transport", fuel:"Transport", petrol:"Transport",
-  shopping:"Shopping", clothing:"Shopping", fashion:"Shopping", accessories:"Shopping",
-  bills:"Bills", utilities:"Bills", electricity:"Bills", water:"Bills",
-  internet:"Bills", phone:"Bills", recharge:"Bills", subscription:"Bills",
-  health:"Health", medical:"Health", pharmacy:"Health", fitness:"Health",
-  gym:"Health", doctor:"Health",
-  entertainment:"Entertainment", movies:"Entertainment", games:"Entertainment",
-  sports:"Entertainment", music:"Entertainment",
-  education:"Education", books:"Education", courses:"Education", stationery:"Education",
-  travel:"Travel", hotel:"Travel", flight:"Travel", trip:"Travel",
-  rent:"Rent", housing:"Rent", maintenance:"Rent",
-  salary:"Salary", income:"Salary", "balance correction":"Other",
-};
+// const CAT_MAP = {
+//   breakfast:"Food", lunch:"Food", dinner:"Food", snack:"Food",
+//   beverage:"Food", "fast food":"Food", groceries:"Food", food:"Food",
+//   restaurant:"Food", cafe:"Food", coffee:"Food",
+//   transit:"Transport", transport:"Transport", rides:"Transport",
+//   cab:"Transport", auto:"Transport", fuel:"Transport", petrol:"Transport",
+//   shopping:"Shopping", clothing:"Shopping", fashion:"Shopping", accessories:"Shopping",
+//   bills:"Bills", utilities:"Bills", electricity:"Bills", water:"Bills",
+//   internet:"Bills", phone:"Bills", recharge:"Bills", subscription:"Bills",
+//   health:"Health", medical:"Health", pharmacy:"Health", fitness:"Health",
+//   gym:"Health", doctor:"Health",
+//   entertainment:"Entertainment", movies:"Entertainment", games:"Entertainment",
+//   sports:"Entertainment", music:"Entertainment",
+//   education:"Education", books:"Education", courses:"Education", stationery:"Education",
+//   travel:"Travel", hotel:"Travel", flight:"Travel", trip:"Travel",
+//   rent:"Rent", housing:"Rent", maintenance:"Rent",
+//   salary:"Salary", income:"Salary", "balance correction":"Other",
+// };
 
 function mapCategory(raw) {
   if (!raw) return "Other";
@@ -85,7 +85,7 @@ function parseCashewRow(row, accounts = []) {
   if (isNaN(ts)) return null;
 
   const catRaw = row["category name"] || row["category"] || row["Category"] || "";
-  const category = mapCategory(catRaw);
+  const category = catRaw.trim() || "Other";
   const description = (row["title"] || row["Title"] || row["description"] || catRaw || "Import").slice(0, 80);
   const reason = (row["note"] || row["Note"] || row["reason"] || "").slice(0, 100);
   const accountName = (row["account"] || row["Account"] || "").trim();
@@ -136,7 +136,7 @@ function parseGenericRow(row, accounts = []) {
   const catKeys = ["category","Category","CATEGORY","category name","Category Name","cat"];
   let catRaw = "";
   for (const k of catKeys) { if (row[k]) { catRaw = row[k]; break; } }
-  const category = mapCategory(catRaw);
+  const category = catRaw.trim() || "Other";
 
   const descKeys = ["description","Description","title","Title","name","Name","item","Item","memo","Memo","narration","Narration","particulars","Particulars"];
   let description = catRaw;
@@ -261,7 +261,7 @@ function parsePDFTextToRows(text) {
 
     rows.push({
       id: uid(), amount: rawAmount,
-      category: mapCategory(desc), description: desc,
+      category: desc.trim() || "Other", description: desc,
       reason: "Imported from PDF",
       type: isIncome ? "income" : "expense",
       timestamp: ts,
@@ -462,7 +462,7 @@ function AccountPreview({ extractedAccounts, existingAccounts }) {
 // ══════════════════════════════════════════════════════════════════════════
 // ── MAIN COMPONENT
 // ══════════════════════════════════════════════════════════════════════════
-export default function ImportHistory({ onImported, showToast, budget, setBudget }) {
+export default function ImportHistory({ onImported, showToast, budget, setBudget, categories = [], onNewCategories }) {
   const [stage, setStage]               = useState("upload");
   const [dragOver, setDragOver]         = useState(false);
   const [parsedItems, setParsedItems]   = useState([]);
@@ -497,6 +497,10 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
           .filter(Boolean);
         if (!items.length) throw new Error("No valid expense rows could be parsed.");
         setParsedItems(items);
+        if (onNewCategories) {
+          const unknown = [...new Set(items.map(i => i.category).filter(c => c && c !== "Other" && !categories.includes(c)))];
+          if (unknown.length) onNewCategories(unknown);
+        }
         setStage("preview");
 
       } else if (ext === "xlsx" || ext === "xls") {
@@ -513,6 +517,10 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
           .filter(Boolean);
         if (!items.length) throw new Error("No valid expense rows could be parsed.");
         setParsedItems(items);
+        if (onNewCategories) {
+        const unknown = [...new Set(items.map(i => i.category).filter(c => c && c !== "Other" && !categories.includes(c)))];
+        if (unknown.length) onNewCategories(unknown);
+      }
         setStage("preview");
 
       } else if (ext === "pdf") {
@@ -533,6 +541,10 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
           );
         }
         setParsedItems(items);
+        if (onNewCategories) {
+          const unknown = [...new Set(items.map(i => i.category).filter(c => c && c !== "Other" && !categories.includes(c)))];
+          if (unknown.length) onNewCategories(unknown);
+        }
         setStage("preview");
 
       } else {
@@ -735,7 +747,7 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
           </div>
 
           {/* Category mapping info */}
-          <div style={styles.infoBox}>
+          {/* <div style={styles.infoBox}>
             <div style={{ fontSize:11, fontWeight:700, color:"#818cf8", marginBottom:5 }}>🗂 Auto Category Mapping</div>
             <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)", lineHeight:1.7 }}>
               Breakfast/Lunch/Dinner → <strong style={{color:"#f97316"}}>Food</strong> ·
@@ -744,7 +756,7 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
               Recharge → <strong style={{color:"#ef4444"}}>Bills</strong> ·
               Salary → <strong style={{color:"#22c55e"}}>Salary</strong>
             </div>
-          </div>
+          </div> */}
         </div>
       )}
 

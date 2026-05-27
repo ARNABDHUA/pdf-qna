@@ -3358,6 +3358,23 @@ const handleCloudSuccess = useCallback((result) => {
                       showToast={showToast}
                       budget={budget}
                       setBudget={setBudget} 
+                      categories={categories}
+                      onNewCategories={(newCats) => {
+                        setCustomCatData(prev => {
+                          const toAdd = newCats.filter(c => !prev.categories.includes(c));
+                          if (!toAdd.length) return prev;
+                          const newIcons = { ...prev.icons };
+                          const newColors = { ...prev.colors };
+                          const extraColorsList = ["#ec4899","#14b8a6","#f43f5e","#84cc16","#fb923c","#a78bfa","#38bdf8","#fbbf24","#4ade80","#c084fc"];
+                          const emojiList = ["📦","🛍️","💡","🎯","🔧","🎨","🏷️","💼","🧾","⚡","🌟","🎪","🔑","🎁","🧩","💫","🌀","🎭","🔮","🌈"];
+                            toAdd.forEach((cat, i) => {
+                              newIcons[cat] = emojiList[Math.floor(Math.random() * emojiList.length)];
+                              newColors[cat] = extraColorsList[i % extraColorsList.length];
+                            });                        
+                          showToast(`✦ Added ${toAdd.length} new categor${toAdd.length === 1 ? "y" : "ies"}: ${toAdd.join(", ")}`, "success");
+                          return { categories: [...prev.categories, ...toAdd], icons: newIcons, colors: newColors };
+                        });
+                      }}
                     />
                   )}
 
