@@ -1713,6 +1713,247 @@ function buildYearlyWorkbook(XLSX, expenses, year, catIcons) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
+// function CategoryBreakdown({ expenses, catIcons, catColors }) {
+//   const [period,      setPeriod]      = React.useState("month");
+//   const [selectedCat, setSelectedCat] = React.useState("all");
+//   const [filterMode,  setFilterMode]  = React.useState("period");
+//   const [pickerYear,  setPickerYear]  = React.useState(() => new Date().getFullYear());
+//   const [pickerMonth, setPickerMonth] = React.useState(() => new Date().getMonth()+1);
+//   const [exporting,   setExporting]   = React.useState(false);
+//   const [exportMode,  setExportMode]  = React.useState("monthly");
+//   const [showExport,  setShowExport]  = React.useState(false);
+//   const [exportYear,  setExportYear]  = React.useState(() => new Date().getFullYear());
+//   const [exportMonth, setExportMonth] = React.useState(() => new Date().getMonth()+1);
+
+//   const availableYears = React.useMemo(() => {
+//     const ys = new Set(expenses.map(e=>new Date(e.timestamp).getFullYear()));
+//     return [...ys].sort((a,b)=>b-a);
+//   }, [expenses]);
+
+//   const fmt    = n => "\u20B9"+Number(n).toLocaleString("en-IN",{maximumFractionDigits:2});
+//   const dateIN = d => new Date(d).toLocaleDateString("en-IN",{day:"2-digit",month:"2-digit",year:"numeric"});
+//   const timeIN = d => new Date(d).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",hour12:true});
+
+//   const filtered = React.useMemo(()=>{
+//     if (filterMode==="custom") {
+//       return expenses.filter(e=>{ const d=new Date(e.timestamp); return e.type==="expense"&&d.getFullYear()===pickerYear&&(d.getMonth()+1)===pickerMonth; });
+//     }
+//     const ist=new Date(Date.now()+5.5*3600000);
+//     const isoDate=d=>{const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;};
+//     const weekKey=d=>{const dt=new Date(d);const day=dt.getDay();const diff=dt.getDate()-day+(day===0?-6:1);return isoDate(new Date(new Date(d).setDate(diff)));};
+//     const monthKey=d=>{const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}`;};
+//     const yearKey=d=>String(new Date(d).getFullYear());
+//     const today=isoDate(ist),thisWeek=weekKey(ist),thisMonth=monthKey(ist),thisYear=yearKey(ist);
+//     return expenses.filter(e=>{
+//       if(e.type!=="expense") return false;
+//       if(period==="day")   return isoDate(e.timestamp)===today;
+//       if(period==="week")  return weekKey(e.timestamp)===thisWeek;
+//       if(period==="month") return monthKey(e.timestamp)===thisMonth;
+//       if(period==="year")  return yearKey(e.timestamp)===thisYear;
+//       return true;
+//     });
+//   },[expenses,period,filterMode,pickerYear,pickerMonth]);
+
+//   const byCategory = React.useMemo(()=>{
+//     const map={};
+//     for(const e of filtered){ if(!map[e.category]) map[e.category]={total:0,count:0,items:[]}; map[e.category].total+=e.amount; map[e.category].count++; map[e.category].items.push(e); }
+//     return Object.entries(map).sort((a,b)=>b[1].total-a[1].total);
+//   },[filtered]);
+
+//   const totalExp=byCategory.reduce((s,[,v])=>s+v.total,0);
+//   const maxVal=byCategory.length?byCategory[0][1].total:1;
+//   const periodLabel=filterMode==="custom"?`${MONTH_NAMES[pickerMonth-1]} ${pickerYear}`:{day:"Today",week:"This Week",month:"This Month",year:"This Year"}[period];
+//   const catDetail=React.useMemo(()=>{ if(selectedCat==="all") return null; const found=byCategory.find(([cat])=>cat===selectedCat); return found?found[1]:null; },[selectedCat,byCategory]);
+
+//   React.useEffect(()=>{ if(selectedCat!=="all"&&!byCategory.some(([cat])=>cat===selectedCat)) setSelectedCat("all"); },[byCategory,selectedCat]);
+
+//   const handleExport=async()=>{
+//     setExporting(true);
+//     try {
+//       const XLSX=await loadSheetJS();
+//       let wb,filename;
+//       if(exportMode==="monthly"){
+//         const mk=`${exportYear}-${String(exportMonth).padStart(2,"0")}`;
+//         wb=buildMonthlyWorkbook(XLSX,expenses,mk,catIcons,catColors);
+//         filename=`expenses_${MONTH_NAMES[exportMonth-1]}_${exportYear}.xlsx`;
+//       } else {
+//         wb=buildYearlyWorkbook(XLSX,expenses,exportYear,catIcons);
+//         filename=`expenses_yearly_${exportYear}.xlsx`;
+//       }
+//       XLSX.writeFile(wb,filename);
+//     } catch(err){ alert("Export failed: "+err.message); }
+//     finally { setExporting(false); setShowExport(false); }
+//   };
+
+//   return (
+//     <div className="et-records">
+//       {/* ── Controls ── */}
+//       <div style={{display:"flex",flexDirection:"column",gap:10}}>
+//         <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+//           <div className="et-view-toggle" style={{flexShrink:0}}>
+//             <button className={`et-view-btn ${filterMode==="period"?"et-view-btn--active":""}`} onClick={()=>setFilterMode("period")}>Quick</button>
+//             <button className={`et-view-btn ${filterMode==="custom"?"et-view-btn--active":""}`} onClick={()=>setFilterMode("custom")}>📅 Month</button>
+//           </div>
+//           {filterMode==="period"&&(
+//             <div className="et-view-toggle">
+//               {[["day","Day"],["week","Week"],["month","Month"],["year","Year"]].map(([v,l])=>
+//                 <button key={v} className={`et-view-btn ${period===v?"et-view-btn--active":""}`} onClick={()=>setPeriod(v)}>{l}</button>
+//               )}
+//             </div>
+//           )}
+//           <button onClick={()=>setShowExport(o=>!o)} style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,padding:"5px 13px",borderRadius:20,border:"1px solid rgba(34,197,94,0.35)",background:"rgba(34,197,94,0.10)",color:"#22c55e",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",flexShrink:0}}>
+//             📊 Export Excel
+//           </button>
+//         </div>
+
+//         {filterMode==="custom"&&(
+//           <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",padding:"10px 14px",background:"rgba(245,158,11,0.06)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10}}>
+//             <span style={{fontSize:11,color:"rgba(255,255,255,0.45)",flexShrink:0}}>Show:</span>
+//             <select className="et-bgt-select" value={pickerMonth} onChange={e=>setPickerMonth(Number(e.target.value))} style={{minWidth:100,padding:"5px 10px",fontSize:12}}>
+//               {MONTH_NAMES.map((n,i)=><option key={i} value={i+1}>{n}</option>)}
+//             </select>
+//             <select className="et-bgt-select" value={pickerYear} onChange={e=>setPickerYear(Number(e.target.value))} style={{minWidth:80,padding:"5px 10px",fontSize:12}}>
+//               {(availableYears.length?availableYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+//             </select>
+//             <span style={{fontSize:12,color:"#f59e0b",fontWeight:700,background:"rgba(245,158,11,0.12)",padding:"3px 10px",borderRadius:20,border:"1px solid rgba(245,158,11,0.25)"}}>
+//               {MONTH_NAMES[pickerMonth-1]} {pickerYear}
+//             </span>
+//           </div>
+//         )}
+
+//         {byCategory.length>0&&(
+//           <select className="et-bgt-select et-cat-filter-sel" value={selectedCat} onChange={e=>setSelectedCat(e.target.value)} style={{maxWidth:200,padding:"5px 12px",fontSize:11}}>
+//             <option value="all">All Categories</option>
+//             {byCategory.map(([cat])=><option key={cat} value={cat}>{catIcons[cat]||"📌"} {cat}</option>)}
+//           </select>
+//         )}
+//       </div>
+
+//       {/* ── Export Panel ── */}
+//       {showExport&&(
+//         <div style={{background:"rgba(34,197,94,0.06)",border:"1px solid rgba(34,197,94,0.22)",borderRadius:12,padding:16,display:"flex",flexDirection:"column",gap:12,animation:"et-slide-down 0.2s ease"}}>
+//           <div style={{fontSize:13,fontWeight:700,color:"#22c55e"}}>📊 Export to Excel</div>
+//           <div style={{display:"flex",gap:7}}>
+//             {[["monthly","📅 Monthly"],["yearly","📆 Yearly"]].map(([v,l])=>(
+//               <button key={v} onClick={()=>setExportMode(v)} style={{padding:"5px 14px",borderRadius:20,fontSize:12,fontWeight:700,border:exportMode===v?"1px solid #22c55e":"1px solid rgba(255,255,255,0.1)",background:exportMode===v?"rgba(34,197,94,0.18)":"transparent",color:exportMode===v?"#22c55e":"rgba(255,255,255,0.4)",cursor:"pointer",fontFamily:"inherit"}}>{l}</button>
+//             ))}
+//           </div>
+//           <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
+//             <span style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>For:</span>
+//             {exportMode==="monthly"&&(
+//               <select className="et-bgt-select" value={exportMonth} onChange={e=>setExportMonth(Number(e.target.value))} style={{minWidth:100,padding:"5px 10px",fontSize:12}}>
+//                 {MONTH_NAMES.map((n,i)=><option key={i} value={i+1}>{n}</option>)}
+//               </select>
+//             )}
+//             <select className="et-bgt-select" value={exportYear} onChange={e=>setExportYear(Number(e.target.value))} style={{minWidth:80,padding:"5px 10px",fontSize:12}}>
+//               {(availableYears.length?availableYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+//             </select>
+//           </div>
+
+//           {/* Sheets preview */}
+//           <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",lineHeight:1.9,background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:9,padding:"10px 13px"}}>
+//             {exportMode==="monthly"?(
+//               <>
+//                 <div>📋 <strong style={{color:"#fff"}}>Summary</strong> — category totals, % share, grand total</div>
+//                 <div>📋 <strong style={{color:"#fff"}}>All Transactions</strong> — every item grouped by day with day-spend totals</div>
+//                 <div>📋 <strong style={{color:"#fff"}}>One sheet per category</strong> — item name · date · day · time · reason · account · amount (day-grouped, colour-coded)</div>
+//               </>
+//             ):(
+//               <>
+//                 <div>📋 <strong style={{color:"#fff"}}>Summary</strong> — category × month pivot table with annual totals</div>
+//                 <div>📋 <strong style={{color:"#fff"}}>By Category</strong> — all year's items grouped per category with dates</div>
+//                 <div>📋 <strong style={{color:"#fff"}}>Jan–Dec sheets</strong> — full item detail per month (day-grouped, category + name + time)</div>
+//               </>
+//             )}
+//           </div>
+
+//           <div style={{display:"flex",gap:8}}>
+//             <button onClick={handleExport} disabled={exporting} style={{flex:1,padding:10,borderRadius:9,border:"none",background:exporting?"#333":"linear-gradient(135deg,#22c55e,#16a34a)",color:"#fff",fontWeight:700,fontSize:13,cursor:exporting?"not-allowed":"pointer",fontFamily:"inherit"}}>
+//               {exporting?"⏳ Building…":"⬇️ Download .xlsx"}
+//             </button>
+//             <button onClick={()=>setShowExport(false)} style={{padding:"10px 16px",borderRadius:9,border:"1px solid rgba(255,255,255,0.1)",background:"transparent",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:13,fontFamily:"inherit"}}>Cancel</button>
+//           </div>
+//         </div>
+//       )}
+
+//       {/* ── Main content ── */}
+//       {byCategory.length===0?(
+//         <div className="et-no-data">No expenses for {periodLabel.toLowerCase()}. Start tracking! 💬</div>
+//       ):selectedCat!=="all"&&catDetail?(
+//         <div className="et-catdetail">
+//           <div className="et-catdetail-header">
+//             <div className="et-catbreak-icon" style={{background:(catColors[selectedCat]||"#6b7280")+"22",color:catColors[selectedCat]||"#6b7280",width:44,height:44,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>{catIcons[selectedCat]||"📌"}</div>
+//             <div style={{flex:1}}>
+//               <div style={{fontSize:16,fontWeight:700,color:"#fff"}}>{selectedCat}</div>
+//               <div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>{catDetail.count} transaction{catDetail.count!==1?"s":""} · {periodLabel}</div>
+//             </div>
+//             <div style={{textAlign:"right"}}>
+//               <div style={{fontSize:20,fontWeight:700,color:catColors[selectedCat]||"#6b7280",fontFamily:"'JetBrains Mono',monospace"}}>{fmt(catDetail.total)}</div>
+//               <div style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{totalExp>0?Math.round(catDetail.total/totalExp*100):0}% of total</div>
+//             </div>
+//           </div>
+//           <div className="et-catdetail-list">
+//             {catDetail.items.sort((a,b)=>b.timestamp-a.timestamp).map(e=>(
+//               <div key={e.id} className="et-catdetail-item">
+//                 <div className="et-catdetail-item-left">
+//                   <span className="et-catdetail-item-desc">{e.description||"—"}</span>
+//                   {e.reason&&<span className="et-catdetail-item-reason">{e.reason}</span>}
+//                 </div>
+//                 <div className="et-catdetail-item-right">
+//                   <span className="et-catdetail-item-amt" style={{color:catColors[selectedCat]||"#6b7280"}}>{fmt(e.amount)}</span>
+//                   <span className="et-catdetail-item-date">{dateIN(e.timestamp)} {timeIN(e.timestamp)}</span>
+//                 </div>
+//               </div>
+//             ))}
+//           </div>
+//         </div>
+//       ):(
+//         <>
+//           <div className="et-catbreak-total">
+//             <span className="et-catbreak-total-label">{periodLabel} Total Spend</span>
+//             <span className="et-catbreak-total-val">{fmt(totalExp)}</span>
+//           </div>
+//           <div className="et-catbreak-grid">
+//             {byCategory.map(([cat,data])=>{
+//               const pct=Math.round(data.total/totalExp*100),barW=Math.max(4,Math.round(data.total/maxVal*100));
+//               const color=catColors[cat]||"#6b7280",icon=catIcons[cat]||"📌";
+//               return(
+//                 <div key={cat} className="et-catbreak-card" onClick={()=>setSelectedCat(cat)} style={{cursor:"pointer"}}>
+//                   <div className="et-catbreak-card-top">
+//                     <div className="et-catbreak-icon" style={{background:color+"22",color}}>{icon}</div>
+//                     <div className="et-catbreak-info"><span className="et-catbreak-name">{cat}</span><span className="et-catbreak-count">{data.count} txn{data.count!==1?"s":""}</span></div>
+//                     <div className="et-catbreak-right"><span className="et-catbreak-amt" style={{color}}>{fmt(data.total)}</span><span className="et-catbreak-pct">{pct}%</span></div>
+//                     <span style={{fontSize:12,color:"rgba(255,255,255,0.25)",marginLeft:4}}>›</span>
+//                   </div>
+//                   <div className="et-catbreak-bar-wrap"><div className="et-catbreak-bar" style={{width:barW+"%",background:`linear-gradient(90deg,${color},${color}88)`}}/></div>
+//                   <div className="et-catbreak-items">
+//                     {data.items.slice(0,3).map(e=><div key={e.id} className="et-catbreak-item"><span className="et-catbreak-item-desc">{e.description||"—"}</span><span className="et-catbreak-item-date">{dateIN(e.timestamp)}</span><span className="et-catbreak-item-amt">{fmt(e.amount)}</span></div>)}
+//                     {data.items.length>3&&<div className="et-catbreak-more">+{data.items.length-3} more · tap card to view all</div>}
+//                   </div>
+//                 </div>
+//               );
+//             })}
+//           </div>
+//           <div className="et-catbreak-summary">
+//             <p className="et-catbreak-summary-title">Category Share</p>
+//             <div className="et-catbreak-pies">
+//               {byCategory.map(([cat,data])=>{const pct=Math.round(data.total/totalExp*100),color=catColors[cat]||"#6b7280";return(
+//                 <div key={cat} className="et-catbreak-pie-row" onClick={()=>setSelectedCat(cat)} style={{cursor:"pointer"}}>
+//                   <div className="et-catbreak-pie-dot" style={{background:color}}/>
+//                   <span className="et-catbreak-pie-name">{catIcons[cat]||"📌"} {cat}</span>
+//                   <div className="et-catbreak-pie-bar-wrap"><div className="et-catbreak-pie-bar" style={{width:pct+"%",background:color}}/></div>
+//                   <span className="et-catbreak-pie-pct" style={{color}}>{pct}%</span>
+//                   <span className="et-catbreak-pie-amt">{fmt(data.total)}</span>
+//                 </div>
+//               );})}
+//             </div>
+//           </div>
+//         </>
+//       )}
+//     </div>
+//   );
+// }
+
 function CategoryBreakdown({ expenses, catIcons, catColors }) {
   const [period,      setPeriod]      = React.useState("month");
   const [selectedCat, setSelectedCat] = React.useState("all");
@@ -1726,209 +1967,273 @@ function CategoryBreakdown({ expenses, catIcons, catColors }) {
   const [exportMonth, setExportMonth] = React.useState(() => new Date().getMonth()+1);
 
   const availableYears = React.useMemo(() => {
-    const ys = new Set(expenses.map(e=>new Date(e.timestamp).getFullYear()));
-    return [...ys].sort((a,b)=>b-a);
+    const ys = new Set(expenses.map(e => new Date(e.timestamp).getFullYear()));
+    return [...ys].sort((a, b) => b - a);
   }, [expenses]);
 
-  const fmt    = n => "\u20B9"+Number(n).toLocaleString("en-IN",{maximumFractionDigits:2});
-  const dateIN = d => new Date(d).toLocaleDateString("en-IN",{day:"2-digit",month:"2-digit",year:"numeric"});
-  const timeIN = d => new Date(d).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",hour12:true});
+  const fmt    = n => "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 });
+  const dateIN = d => new Date(d).toLocaleDateString("en-IN", { day: "2-digit", month: "2-digit", year: "numeric" });
+  const timeIN = d => new Date(d).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", hour12: true });
 
-  const filtered = React.useMemo(()=>{
-    if (filterMode==="custom") {
-      return expenses.filter(e=>{ const d=new Date(e.timestamp); return e.type==="expense"&&d.getFullYear()===pickerYear&&(d.getMonth()+1)===pickerMonth; });
+  // ── Extract effective amount from group-split reason ──
+
+  const getEffectiveAmount = (e) => {
+    const match = e.reason?.match(/your share[:\s]+[₹\u20B9]?\s*([0-9,]+(?:\.[0-9]+)?)/i);
+    if (!match) return e.amount;
+    // Remove commas before parsing (e.g. "2,500" → 2500)
+    return parseFloat(match[1].replace(/,/g, ""));
+  };
+
+  const filtered = React.useMemo(() => {
+    if (filterMode === "custom") {
+      return expenses.filter(e => {
+        const d = new Date(e.timestamp);
+        return e.type === "expense" && d.getFullYear() === pickerYear && (d.getMonth() + 1) === pickerMonth;
+      });
     }
-    const ist=new Date(Date.now()+5.5*3600000);
-    const isoDate=d=>{const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;};
-    const weekKey=d=>{const dt=new Date(d);const day=dt.getDay();const diff=dt.getDate()-day+(day===0?-6:1);return isoDate(new Date(new Date(d).setDate(diff)));};
-    const monthKey=d=>{const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}`;};
-    const yearKey=d=>String(new Date(d).getFullYear());
-    const today=isoDate(ist),thisWeek=weekKey(ist),thisMonth=monthKey(ist),thisYear=yearKey(ist);
-    return expenses.filter(e=>{
-      if(e.type!=="expense") return false;
-      if(period==="day")   return isoDate(e.timestamp)===today;
-      if(period==="week")  return weekKey(e.timestamp)===thisWeek;
-      if(period==="month") return monthKey(e.timestamp)===thisMonth;
-      if(period==="year")  return yearKey(e.timestamp)===thisYear;
+    const ist = new Date(Date.now() + 5.5 * 3600000);
+    const isoDate  = d => { const dt = new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`; };
+    const weekKey  = d => { const dt = new Date(d); const day = dt.getDay(); const diff = dt.getDate() - day + (day === 0 ? -6 : 1); return isoDate(new Date(new Date(d).setDate(diff))); };
+    const monthKey = d => { const dt = new Date(d); return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}`; };
+    const yearKey  = d => String(new Date(d).getFullYear());
+    const today    = isoDate(ist), thisWeek = weekKey(ist), thisMonth = monthKey(ist), thisYear = yearKey(ist);
+    return expenses.filter(e => {
+      if (e.type !== "expense") return false;
+      if (period === "day")   return isoDate(e.timestamp)  === today;
+      if (period === "week")  return weekKey(e.timestamp)  === thisWeek;
+      if (period === "month") return monthKey(e.timestamp) === thisMonth;
+      if (period === "year")  return yearKey(e.timestamp)  === thisYear;
       return true;
     });
-  },[expenses,period,filterMode,pickerYear,pickerMonth]);
+  }, [expenses, period, filterMode, pickerYear, pickerMonth]);
 
-  const byCategory = React.useMemo(()=>{
-    const map={};
-    for(const e of filtered){ if(!map[e.category]) map[e.category]={total:0,count:0,items:[]}; map[e.category].total+=e.amount; map[e.category].count++; map[e.category].items.push(e); }
-    return Object.entries(map).sort((a,b)=>b[1].total-a[1].total);
-  },[filtered]);
+  // ── Use effectiveAmount for category totals ──
+  const byCategory = React.useMemo(() => {
+    const map = {};
+    for (const e of filtered) {
+      if (!map[e.category]) map[e.category] = { total: 0, count: 0, items: [] };
+      map[e.category].total += getEffectiveAmount(e);   // ← effective amount
+      map[e.category].count++;
+      map[e.category].items.push(e);
+    }
+    return Object.entries(map).sort((a, b) => b[1].total - a[1].total);
+  }, [filtered]);
 
-  const totalExp=byCategory.reduce((s,[,v])=>s+v.total,0);
-  const maxVal=byCategory.length?byCategory[0][1].total:1;
-  const periodLabel=filterMode==="custom"?`${MONTH_NAMES[pickerMonth-1]} ${pickerYear}`:{day:"Today",week:"This Week",month:"This Month",year:"This Year"}[period];
-  const catDetail=React.useMemo(()=>{ if(selectedCat==="all") return null; const found=byCategory.find(([cat])=>cat===selectedCat); return found?found[1]:null; },[selectedCat,byCategory]);
+  const totalExp    = byCategory.reduce((s, [, v]) => s + v.total, 0);
+  const maxVal      = byCategory.length ? byCategory[0][1].total : 1;
+  const periodLabel = filterMode === "custom"
+    ? `${MONTH_NAMES[pickerMonth - 1]} ${pickerYear}`
+    : { day: "Today", week: "This Week", month: "This Month", year: "This Year" }[period];
 
-  React.useEffect(()=>{ if(selectedCat!=="all"&&!byCategory.some(([cat])=>cat===selectedCat)) setSelectedCat("all"); },[byCategory,selectedCat]);
+  const catDetail = React.useMemo(() => {
+    if (selectedCat === "all") return null;
+    const found = byCategory.find(([cat]) => cat === selectedCat);
+    return found ? found[1] : null;
+  }, [selectedCat, byCategory]);
 
-  const handleExport=async()=>{
+  React.useEffect(() => {
+    if (selectedCat !== "all" && !byCategory.some(([cat]) => cat === selectedCat))
+      setSelectedCat("all");
+  }, [byCategory, selectedCat]);
+
+  const handleExport = async () => {
     setExporting(true);
     try {
-      const XLSX=await loadSheetJS();
-      let wb,filename;
-      if(exportMode==="monthly"){
-        const mk=`${exportYear}-${String(exportMonth).padStart(2,"0")}`;
-        wb=buildMonthlyWorkbook(XLSX,expenses,mk,catIcons,catColors);
-        filename=`expenses_${MONTH_NAMES[exportMonth-1]}_${exportYear}.xlsx`;
+      const XLSX = await loadSheetJS();
+      let wb, filename;
+      if (exportMode === "monthly") {
+        const mk = `${exportYear}-${String(exportMonth).padStart(2, "0")}`;
+        wb = buildMonthlyWorkbook(XLSX, expenses, mk, catIcons, catColors);
+        filename = `expenses_${MONTH_NAMES[exportMonth - 1]}_${exportYear}.xlsx`;
       } else {
-        wb=buildYearlyWorkbook(XLSX,expenses,exportYear,catIcons);
-        filename=`expenses_yearly_${exportYear}.xlsx`;
+        wb = buildYearlyWorkbook(XLSX, expenses, exportYear, catIcons);
+        filename = `expenses_yearly_${exportYear}.xlsx`;
       }
-      XLSX.writeFile(wb,filename);
-    } catch(err){ alert("Export failed: "+err.message); }
-    finally { setExporting(false); setShowExport(false); }
+      XLSX.writeFile(wb, filename);
+    } catch (err) {
+      alert("Export failed: " + err.message);
+    } finally {
+      setExporting(false);
+      setShowExport(false);
+    }
   };
 
   return (
     <div className="et-records">
+
       {/* ── Controls ── */}
-      <div style={{display:"flex",flexDirection:"column",gap:10}}>
-        <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-          <div className="et-view-toggle" style={{flexShrink:0}}>
-            <button className={`et-view-btn ${filterMode==="period"?"et-view-btn--active":""}`} onClick={()=>setFilterMode("period")}>Quick</button>
-            <button className={`et-view-btn ${filterMode==="custom"?"et-view-btn--active":""}`} onClick={()=>setFilterMode("custom")}>📅 Month</button>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <div className="et-view-toggle" style={{ flexShrink: 0 }}>
+            <button className={`et-view-btn ${filterMode === "period" ? "et-view-btn--active" : ""}`} onClick={() => setFilterMode("period")}>Quick</button>
+            <button className={`et-view-btn ${filterMode === "custom" ? "et-view-btn--active" : ""}`} onClick={() => setFilterMode("custom")}>📅 Month</button>
           </div>
-          {filterMode==="period"&&(
+          {filterMode === "period" && (
             <div className="et-view-toggle">
-              {[["day","Day"],["week","Week"],["month","Month"],["year","Year"]].map(([v,l])=>
-                <button key={v} className={`et-view-btn ${period===v?"et-view-btn--active":""}`} onClick={()=>setPeriod(v)}>{l}</button>
+              {[["day","Day"],["week","Week"],["month","Month"],["year","Year"]].map(([v, l]) =>
+                <button key={v} className={`et-view-btn ${period === v ? "et-view-btn--active" : ""}`} onClick={() => setPeriod(v)}>{l}</button>
               )}
             </div>
           )}
-          <button onClick={()=>setShowExport(o=>!o)} style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,padding:"5px 13px",borderRadius:20,border:"1px solid rgba(34,197,94,0.35)",background:"rgba(34,197,94,0.10)",color:"#22c55e",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",flexShrink:0}}>
+          <button
+            onClick={() => setShowExport(o => !o)}
+            style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, padding: "5px 13px", borderRadius: 20, border: "1px solid rgba(34,197,94,0.35)", background: "rgba(34,197,94,0.10)", color: "#22c55e", fontSize: 12, fontWeight: 700, cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
+          >
             📊 Export Excel
           </button>
         </div>
 
-        {filterMode==="custom"&&(
-          <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",padding:"10px 14px",background:"rgba(245,158,11,0.06)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10}}>
-            <span style={{fontSize:11,color:"rgba(255,255,255,0.45)",flexShrink:0}}>Show:</span>
-            <select className="et-bgt-select" value={pickerMonth} onChange={e=>setPickerMonth(Number(e.target.value))} style={{minWidth:100,padding:"5px 10px",fontSize:12}}>
-              {MONTH_NAMES.map((n,i)=><option key={i} value={i+1}>{n}</option>)}
+        {filterMode === "custom" && (
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", padding: "10px 14px", background: "rgba(245,158,11,0.06)", border: "1px solid rgba(245,158,11,0.2)", borderRadius: 10 }}>
+            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", flexShrink: 0 }}>Show:</span>
+            <select className="et-bgt-select" value={pickerMonth} onChange={e => setPickerMonth(Number(e.target.value))} style={{ minWidth: 100, padding: "5px 10px", fontSize: 12 }}>
+              {MONTH_NAMES.map((n, i) => <option key={i} value={i + 1}>{n}</option>)}
             </select>
-            <select className="et-bgt-select" value={pickerYear} onChange={e=>setPickerYear(Number(e.target.value))} style={{minWidth:80,padding:"5px 10px",fontSize:12}}>
-              {(availableYears.length?availableYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+            <select className="et-bgt-select" value={pickerYear} onChange={e => setPickerYear(Number(e.target.value))} style={{ minWidth: 80, padding: "5px 10px", fontSize: 12 }}>
+              {(availableYears.length ? availableYears : [new Date().getFullYear()]).map(y => <option key={y} value={y}>{y}</option>)}
             </select>
-            <span style={{fontSize:12,color:"#f59e0b",fontWeight:700,background:"rgba(245,158,11,0.12)",padding:"3px 10px",borderRadius:20,border:"1px solid rgba(245,158,11,0.25)"}}>
-              {MONTH_NAMES[pickerMonth-1]} {pickerYear}
+            <span style={{ fontSize: 12, color: "#f59e0b", fontWeight: 700, background: "rgba(245,158,11,0.12)", padding: "3px 10px", borderRadius: 20, border: "1px solid rgba(245,158,11,0.25)" }}>
+              {MONTH_NAMES[pickerMonth - 1]} {pickerYear}
             </span>
           </div>
         )}
 
-        {byCategory.length>0&&(
-          <select className="et-bgt-select et-cat-filter-sel" value={selectedCat} onChange={e=>setSelectedCat(e.target.value)} style={{maxWidth:200,padding:"5px 12px",fontSize:11}}>
+        {byCategory.length > 0 && (
+          <select className="et-bgt-select et-cat-filter-sel" value={selectedCat} onChange={e => setSelectedCat(e.target.value)} style={{ maxWidth: 200, padding: "5px 12px", fontSize: 11 }}>
             <option value="all">All Categories</option>
-            {byCategory.map(([cat])=><option key={cat} value={cat}>{catIcons[cat]||"📌"} {cat}</option>)}
+            {byCategory.map(([cat]) => <option key={cat} value={cat}>{catIcons[cat] || "📌"} {cat}</option>)}
           </select>
         )}
       </div>
 
       {/* ── Export Panel ── */}
-      {showExport&&(
-        <div style={{background:"rgba(34,197,94,0.06)",border:"1px solid rgba(34,197,94,0.22)",borderRadius:12,padding:16,display:"flex",flexDirection:"column",gap:12,animation:"et-slide-down 0.2s ease"}}>
-          <div style={{fontSize:13,fontWeight:700,color:"#22c55e"}}>📊 Export to Excel</div>
-          <div style={{display:"flex",gap:7}}>
-            {[["monthly","📅 Monthly"],["yearly","📆 Yearly"]].map(([v,l])=>(
-              <button key={v} onClick={()=>setExportMode(v)} style={{padding:"5px 14px",borderRadius:20,fontSize:12,fontWeight:700,border:exportMode===v?"1px solid #22c55e":"1px solid rgba(255,255,255,0.1)",background:exportMode===v?"rgba(34,197,94,0.18)":"transparent",color:exportMode===v?"#22c55e":"rgba(255,255,255,0.4)",cursor:"pointer",fontFamily:"inherit"}}>{l}</button>
+      {showExport && (
+        <div style={{ background: "rgba(34,197,94,0.06)", border: "1px solid rgba(34,197,94,0.22)", borderRadius: 12, padding: 16, display: "flex", flexDirection: "column", gap: 12, animation: "et-slide-down 0.2s ease" }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#22c55e" }}>📊 Export to Excel</div>
+          <div style={{ display: "flex", gap: 7 }}>
+            {[["monthly","📅 Monthly"],["yearly","📆 Yearly"]].map(([v, l]) => (
+              <button key={v} onClick={() => setExportMode(v)} style={{ padding: "5px 14px", borderRadius: 20, fontSize: 12, fontWeight: 700, border: exportMode === v ? "1px solid #22c55e" : "1px solid rgba(255,255,255,0.1)", background: exportMode === v ? "rgba(34,197,94,0.18)" : "transparent", color: exportMode === v ? "#22c55e" : "rgba(255,255,255,0.4)", cursor: "pointer", fontFamily: "inherit" }}>{l}</button>
             ))}
           </div>
-          <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-            <span style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>For:</span>
-            {exportMode==="monthly"&&(
-              <select className="et-bgt-select" value={exportMonth} onChange={e=>setExportMonth(Number(e.target.value))} style={{minWidth:100,padding:"5px 10px",fontSize:12}}>
-                {MONTH_NAMES.map((n,i)=><option key={i} value={i+1}>{n}</option>)}
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>For:</span>
+            {exportMode === "monthly" && (
+              <select className="et-bgt-select" value={exportMonth} onChange={e => setExportMonth(Number(e.target.value))} style={{ minWidth: 100, padding: "5px 10px", fontSize: 12 }}>
+                {MONTH_NAMES.map((n, i) => <option key={i} value={i + 1}>{n}</option>)}
               </select>
             )}
-            <select className="et-bgt-select" value={exportYear} onChange={e=>setExportYear(Number(e.target.value))} style={{minWidth:80,padding:"5px 10px",fontSize:12}}>
-              {(availableYears.length?availableYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
+            <select className="et-bgt-select" value={exportYear} onChange={e => setExportYear(Number(e.target.value))} style={{ minWidth: 80, padding: "5px 10px", fontSize: 12 }}>
+              {(availableYears.length ? availableYears : [new Date().getFullYear()]).map(y => <option key={y} value={y}>{y}</option>)}
             </select>
           </div>
 
           {/* Sheets preview */}
-          <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",lineHeight:1.9,background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:9,padding:"10px 13px"}}>
-            {exportMode==="monthly"?(
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", lineHeight: 1.9, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.07)", borderRadius: 9, padding: "10px 13px" }}>
+            {exportMode === "monthly" ? (
               <>
-                <div>📋 <strong style={{color:"#fff"}}>Summary</strong> — category totals, % share, grand total</div>
-                <div>📋 <strong style={{color:"#fff"}}>All Transactions</strong> — every item grouped by day with day-spend totals</div>
-                <div>📋 <strong style={{color:"#fff"}}>One sheet per category</strong> — item name · date · day · time · reason · account · amount (day-grouped, colour-coded)</div>
+                <div>📋 <strong style={{ color: "#fff" }}>Summary</strong> — category totals, % share, grand total</div>
+                <div>📋 <strong style={{ color: "#fff" }}>All Transactions</strong> — every item grouped by day with day-spend totals</div>
+                <div>📋 <strong style={{ color: "#fff" }}>One sheet per category</strong> — item name · date · day · time · reason · account · amount (day-grouped, colour-coded)</div>
               </>
-            ):(
+            ) : (
               <>
-                <div>📋 <strong style={{color:"#fff"}}>Summary</strong> — category × month pivot table with annual totals</div>
-                <div>📋 <strong style={{color:"#fff"}}>By Category</strong> — all year's items grouped per category with dates</div>
-                <div>📋 <strong style={{color:"#fff"}}>Jan–Dec sheets</strong> — full item detail per month (day-grouped, category + name + time)</div>
+                <div>📋 <strong style={{ color: "#fff" }}>Summary</strong> — category × month pivot table with annual totals</div>
+                <div>📋 <strong style={{ color: "#fff" }}>By Category</strong> — all year's items grouped per category with dates</div>
+                <div>📋 <strong style={{ color: "#fff" }}>Jan–Dec sheets</strong> — full item detail per month (day-grouped, category + name + time)</div>
               </>
             )}
           </div>
 
-          <div style={{display:"flex",gap:8}}>
-            <button onClick={handleExport} disabled={exporting} style={{flex:1,padding:10,borderRadius:9,border:"none",background:exporting?"#333":"linear-gradient(135deg,#22c55e,#16a34a)",color:"#fff",fontWeight:700,fontSize:13,cursor:exporting?"not-allowed":"pointer",fontFamily:"inherit"}}>
-              {exporting?"⏳ Building…":"⬇️ Download .xlsx"}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={handleExport} disabled={exporting} style={{ flex: 1, padding: 10, borderRadius: 9, border: "none", background: exporting ? "#333" : "linear-gradient(135deg,#22c55e,#16a34a)", color: "#fff", fontWeight: 700, fontSize: 13, cursor: exporting ? "not-allowed" : "pointer", fontFamily: "inherit" }}>
+              {exporting ? "⏳ Building…" : "⬇️ Download .xlsx"}
             </button>
-            <button onClick={()=>setShowExport(false)} style={{padding:"10px 16px",borderRadius:9,border:"1px solid rgba(255,255,255,0.1)",background:"transparent",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:13,fontFamily:"inherit"}}>Cancel</button>
+            <button onClick={() => setShowExport(false)} style={{ padding: "10px 16px", borderRadius: 9, border: "1px solid rgba(255,255,255,0.1)", background: "transparent", color: "rgba(255,255,255,0.5)", cursor: "pointer", fontSize: 13, fontFamily: "inherit" }}>Cancel</button>
           </div>
         </div>
       )}
 
       {/* ── Main content ── */}
-      {byCategory.length===0?(
+      {byCategory.length === 0 ? (
         <div className="et-no-data">No expenses for {periodLabel.toLowerCase()}. Start tracking! 💬</div>
-      ):selectedCat!=="all"&&catDetail?(
+
+      ) : selectedCat !== "all" && catDetail ? (
         <div className="et-catdetail">
           <div className="et-catdetail-header">
-            <div className="et-catbreak-icon" style={{background:(catColors[selectedCat]||"#6b7280")+"22",color:catColors[selectedCat]||"#6b7280",width:44,height:44,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>{catIcons[selectedCat]||"📌"}</div>
-            <div style={{flex:1}}>
-              <div style={{fontSize:16,fontWeight:700,color:"#fff"}}>{selectedCat}</div>
-              <div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>{catDetail.count} transaction{catDetail.count!==1?"s":""} · {periodLabel}</div>
+            <div
+              className="et-catbreak-icon"
+              style={{ background: (catColors[selectedCat] || "#6b7280") + "22", color: catColors[selectedCat] || "#6b7280", width: 44, height: 44, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22 }}
+            >
+              {catIcons[selectedCat] || "📌"}
             </div>
-            <div style={{textAlign:"right"}}>
-              <div style={{fontSize:20,fontWeight:700,color:catColors[selectedCat]||"#6b7280",fontFamily:"'JetBrains Mono',monospace"}}>{fmt(catDetail.total)}</div>
-              <div style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{totalExp>0?Math.round(catDetail.total/totalExp*100):0}% of total</div>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: 16, fontWeight: 700, color: "#fff" }}>{selectedCat}</div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)" }}>{catDetail.count} transaction{catDetail.count !== 1 ? "s" : ""} · {periodLabel}</div>
+            </div>
+            <div style={{ textAlign: "right" }}>
+              {/* catDetail.total is already the effective sum — no change needed here */}
+              <div style={{ fontSize: 20, fontWeight: 700, color: catColors[selectedCat] || "#6b7280", fontFamily: "'JetBrains Mono',monospace" }}>{fmt(catDetail.total)}</div>
+              <div style={{ fontSize: 10, color: "rgba(255,255,255,0.3)" }}>{totalExp > 0 ? Math.round(catDetail.total / totalExp * 100) : 0}% of total</div>
             </div>
           </div>
           <div className="et-catdetail-list">
-            {catDetail.items.sort((a,b)=>b.timestamp-a.timestamp).map(e=>(
+            {catDetail.items.sort((a, b) => b.timestamp - a.timestamp).map(e => (
               <div key={e.id} className="et-catdetail-item">
                 <div className="et-catdetail-item-left">
-                  <span className="et-catdetail-item-desc">{e.description||"—"}</span>
-                  {e.reason&&<span className="et-catdetail-item-reason">{e.reason}</span>}
+                  <span className="et-catdetail-item-desc">{e.description || "—"}</span>
+                  {e.reason && <span className="et-catdetail-item-reason">{e.reason}</span>}
                 </div>
                 <div className="et-catdetail-item-right">
-                  <span className="et-catdetail-item-amt" style={{color:catColors[selectedCat]||"#6b7280"}}>{fmt(e.amount)}</span>
+                  {/* ← shows effective share amount, not full e.amount */}
+                  <span className="et-catdetail-item-amt" style={{ color: catColors[selectedCat] || "#6b7280" }}>{fmt(getEffectiveAmount(e))}</span>
                   <span className="et-catdetail-item-date">{dateIN(e.timestamp)} {timeIN(e.timestamp)}</span>
                 </div>
               </div>
             ))}
           </div>
         </div>
-      ):(
+
+      ) : (
         <>
           <div className="et-catbreak-total">
             <span className="et-catbreak-total-label">{periodLabel} Total Spend</span>
             <span className="et-catbreak-total-val">{fmt(totalExp)}</span>
           </div>
           <div className="et-catbreak-grid">
-            {byCategory.map(([cat,data])=>{
-              const pct=Math.round(data.total/totalExp*100),barW=Math.max(4,Math.round(data.total/maxVal*100));
-              const color=catColors[cat]||"#6b7280",icon=catIcons[cat]||"📌";
-              return(
-                <div key={cat} className="et-catbreak-card" onClick={()=>setSelectedCat(cat)} style={{cursor:"pointer"}}>
+            {byCategory.map(([cat, data]) => {
+              const pct   = Math.round(data.total / totalExp * 100);
+              const barW  = Math.max(4, Math.round(data.total / maxVal * 100));
+              const color = catColors[cat] || "#6b7280";
+              const icon  = catIcons[cat]  || "📌";
+              return (
+                <div key={cat} className="et-catbreak-card" onClick={() => setSelectedCat(cat)} style={{ cursor: "pointer" }}>
                   <div className="et-catbreak-card-top">
-                    <div className="et-catbreak-icon" style={{background:color+"22",color}}>{icon}</div>
-                    <div className="et-catbreak-info"><span className="et-catbreak-name">{cat}</span><span className="et-catbreak-count">{data.count} txn{data.count!==1?"s":""}</span></div>
-                    <div className="et-catbreak-right"><span className="et-catbreak-amt" style={{color}}>{fmt(data.total)}</span><span className="et-catbreak-pct">{pct}%</span></div>
-                    <span style={{fontSize:12,color:"rgba(255,255,255,0.25)",marginLeft:4}}>›</span>
+                    <div className="et-catbreak-icon" style={{ background: color + "22", color }}>{icon}</div>
+                    <div className="et-catbreak-info">
+                      <span className="et-catbreak-name">{cat}</span>
+                      <span className="et-catbreak-count">{data.count} txn{data.count !== 1 ? "s" : ""}</span>
+                    </div>
+                    <div className="et-catbreak-right">
+                      <span className="et-catbreak-amt" style={{ color }}>{fmt(data.total)}</span>
+                      <span className="et-catbreak-pct">{pct}%</span>
+                    </div>
+                    <span style={{ fontSize: 12, color: "rgba(255,255,255,0.25)", marginLeft: 4 }}>›</span>
                   </div>
-                  <div className="et-catbreak-bar-wrap"><div className="et-catbreak-bar" style={{width:barW+"%",background:`linear-gradient(90deg,${color},${color}88)`}}/></div>
+                  <div className="et-catbreak-bar-wrap">
+                    <div className="et-catbreak-bar" style={{ width: barW + "%", background: `linear-gradient(90deg,${color},${color}88)` }} />
+                  </div>
                   <div className="et-catbreak-items">
-                    {data.items.slice(0,3).map(e=><div key={e.id} className="et-catbreak-item"><span className="et-catbreak-item-desc">{e.description||"—"}</span><span className="et-catbreak-item-date">{dateIN(e.timestamp)}</span><span className="et-catbreak-item-amt">{fmt(e.amount)}</span></div>)}
-                    {data.items.length>3&&<div className="et-catbreak-more">+{data.items.length-3} more · tap card to view all</div>}
+                    {data.items.slice(0, 3).map(e => (
+                      <div key={e.id} className="et-catbreak-item">
+                        <span className="et-catbreak-item-desc">{e.description || "—"}</span>
+                        <span className="et-catbreak-item-date">{dateIN(e.timestamp)}</span>
+                        {/* ← preview rows also show effective amount */}
+                        <span className="et-catbreak-item-amt">{fmt(getEffectiveAmount(e))}</span>
+                      </div>
+                    ))}
+                    {data.items.length > 3 && (
+                      <div className="et-catbreak-more">+{data.items.length - 3} more · tap card to view all</div>
+                    )}
                   </div>
                 </div>
               );
@@ -1937,15 +2242,21 @@ function CategoryBreakdown({ expenses, catIcons, catColors }) {
           <div className="et-catbreak-summary">
             <p className="et-catbreak-summary-title">Category Share</p>
             <div className="et-catbreak-pies">
-              {byCategory.map(([cat,data])=>{const pct=Math.round(data.total/totalExp*100),color=catColors[cat]||"#6b7280";return(
-                <div key={cat} className="et-catbreak-pie-row" onClick={()=>setSelectedCat(cat)} style={{cursor:"pointer"}}>
-                  <div className="et-catbreak-pie-dot" style={{background:color}}/>
-                  <span className="et-catbreak-pie-name">{catIcons[cat]||"📌"} {cat}</span>
-                  <div className="et-catbreak-pie-bar-wrap"><div className="et-catbreak-pie-bar" style={{width:pct+"%",background:color}}/></div>
-                  <span className="et-catbreak-pie-pct" style={{color}}>{pct}%</span>
-                  <span className="et-catbreak-pie-amt">{fmt(data.total)}</span>
-                </div>
-              );})}
+              {byCategory.map(([cat, data]) => {
+                const pct   = Math.round(data.total / totalExp * 100);
+                const color = catColors[cat] || "#6b7280";
+                return (
+                  <div key={cat} className="et-catbreak-pie-row" onClick={() => setSelectedCat(cat)} style={{ cursor: "pointer" }}>
+                    <div className="et-catbreak-pie-dot" style={{ background: color }} />
+                    <span className="et-catbreak-pie-name">{catIcons[cat] || "📌"} {cat}</span>
+                    <div className="et-catbreak-pie-bar-wrap">
+                      <div className="et-catbreak-pie-bar" style={{ width: pct + "%", background: color }} />
+                    </div>
+                    <span className="et-catbreak-pie-pct" style={{ color }}>{pct}%</span>
+                    <span className="et-catbreak-pie-amt">{fmt(data.total)}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         </>
