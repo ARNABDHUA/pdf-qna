@@ -331,12 +331,14 @@ function deduplicateItems(incoming, existing) {
   const existingIds = new Set(existing.map(e => e.id));
   // Also fingerprint by timestamp+amount+description to catch re-imports
   const fingerprints = new Set(
-    existing.map(e => `${e.timestamp}|${e.amount}|${e.description}`)
+  existing.map(e =>
+    `${e.timestamp}|${e.amount}|${e.description}|${e.category}|${e.type}|${(e.accountName || "").toLowerCase().trim()}`
+  )
   );
   const fresh = [];
   let dupes = 0;
   for (const item of incoming) {
-    const fp = `${item.timestamp}|${item.amount}|${item.description}`;
+    const fp = `${item.timestamp}|${item.amount}|${item.description}|${item.category}|${item.type}|${(item.accountName || "").toLowerCase().trim()}`;
     if (existingIds.has(item.id) || fingerprints.has(fp)) { dupes++; continue; }
     fresh.push(item);
     fingerprints.add(fp); // prevent dupes within the same import batch
@@ -639,9 +641,15 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
       showToast?.("⚠️ Storage quota exceeded — some records may not have been saved.", "error");
     }
 
-    // ── Upsert accounts ──────────────────────────────────────────────
-    const extracted = extractAccountsFromItems(toImport);
-    const { created: accCreated, updated: accUpdated } = upsertAccountsFromImport(extracted);
+    // ── Upsert accounts ONLY if there are fresh (non-duplicate) records ──
+    // Use fresh records to calculate balance delta so duplicates don't
+    // inflate account balances on re-import.
+    const extracted = fresh.length > 0
+      ? extractAccountsFromItems(fresh)
+      : [];
+    const { created: accCreated, updated: accUpdated } = fresh.length > 0
+      ? upsertAccountsFromImport(extracted)
+      : { created: 0, updated: 0 };
 
     // ── Notify parent ────────────────────────────────────────────────
     onImported?.(fresh);

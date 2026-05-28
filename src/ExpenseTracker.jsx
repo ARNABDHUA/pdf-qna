@@ -6,6 +6,7 @@ import GroupSplits from "./Groupsplits";
 
 import ImportHistory from "./ImportHistory";
 import CommunityLeaderboard from "./CommunityLeaderboard";
+import CsvExport from "./CsvExport";
 
 
 // ── Storage Keys ───────────────────────────────────────────────────────────────
@@ -3015,10 +3016,10 @@ const handleCloudSuccess = useCallback((result) => {
               </div>
             </div>
           )}
-          
+          {/* remove thr part ["compare","📈","Compare"] */}
           {/* Tabs */}
           <div className="et-tabs">
-            {[["chat","💬","Chat"],["table","📊","Records"],["catbreak","🎯","By Cat"],["accounts","💳","Accounts"],["compare","📈","Compare"] ,["community", "🏆", "Community"],["import", "📥", "Import"],["loans","🤝","Splits"],["groups","👥","Groups"]].map(([t,ic,l])=>(
+            {[["chat","💬","Chat"],["table","📊","Records"],["catbreak","🎯","By Cat"],["accounts","💳","Accounts"],["community", "🏆", "Community"],["csvexport","📤","Export"],["import", "📥", "Import"],["loans","🤝","Splits"],["groups","👥","Groups"]].map(([t,ic,l])=>(
               <button key={t} className={`et-tab ${tab===t?"et-tab--active":""}`} onClick={()=>{setTab(t);setSettingsOpen(false);}}>
                 <span>{ic}</span><span className="et-tab-label">{l}</span>
                 {t==="loans"&&totalLoansOwed>0&&<span className="et-tab-badge">{loans.length}</span>}
@@ -3095,6 +3096,14 @@ const handleCloudSuccess = useCallback((result) => {
             )}
 
             {tab==="catbreak"&&<CategoryBreakdown expenses={expenses} catIcons={catIcons} catColors={catColors}/>}
+            {tab === "csvexport" && (
+                <CsvExport
+                  expenses={expenses}
+                  budget={budget}
+                  catIcons={catIcons}
+                  catColors={catColors}
+                />
+              )}
             {/* {tab==="accounts"&&<AccountsTab budget={budget} setBudget={setBudget} showToast={showToast} onRecordAccountTransaction={handleRecordAccountTransaction}/>} */}
             {tab==="accounts"&&<AccountsTab 
                 budget={budget} 
@@ -3108,12 +3117,35 @@ const handleCloudSuccess = useCallback((result) => {
                 <ImportHistory
                       credentials={cloudCredentials}
                       onImported={(newExpenses) => {
-                        setExpenses(prev =>
-                          Object.values(
-                            [...prev, ...newExpenses].reduce((m, e) => { m[e.id] = e; return m; }, {})
-                          ).sort((a, b) => b.timestamp - a.timestamp)
-                        );
-                        showToast(`✅ Imported ${newExpenses.length} records!`, "success");
+                        setExpenses(prev => {
+                          // Build fingerprint set from existing records
+                          const fingerprints = new Set(
+                            prev.map(e =>
+                              `${e.timestamp}|${e.amount}|${(e.description || "").toLowerCase().trim()}|${(e.category || "").toLowerCase().trim()}|${e.type}|${(e.accountName || "").toLowerCase().trim()}`
+                            )
+                          );
+                          const existingIds = new Set(prev.map(e => e.id));
+
+                          const fresh = [];
+                          let dupes = 0;
+                          for (const e of newExpenses) {
+                            const fp = `${e.timestamp}|${e.amount}|${(e.description || "").toLowerCase().trim()}|${(e.category || "").toLowerCase().trim()}|${e.type}|${(e.accountName || "").toLowerCase().trim()}`;
+                            if (existingIds.has(e.id) || fingerprints.has(fp)) {
+                              dupes++;
+                              continue;
+                            }
+                            fresh.push(e);
+                            fingerprints.add(fp); // prevent dupes within the batch itself
+                          }
+
+                          if (dupes > 0) {
+                            showToast(`✅ Imported ${fresh.length} records · ${dupes} duplicate${dupes !== 1 ? "s" : ""} skipped`, "success");
+                          } else {
+                            showToast(`✅ Imported ${fresh.length} records!`, "success");
+                          }
+
+                          return [...prev, ...fresh].sort((a, b) => b.timestamp - a.timestamp);
+                        });
                       }}
                       showToast={showToast}
                       budget={budget}
