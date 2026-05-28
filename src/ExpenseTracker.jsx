@@ -5,6 +5,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from "react"
 import GroupSplits from "./Groupsplits";
 
 import ImportHistory from "./ImportHistory";
+import CommunityLeaderboard from "./CommunityLeaderboard";
 
 
 // ── Storage Keys ───────────────────────────────────────────────────────────────
@@ -3273,10 +3274,10 @@ const handleCloudSuccess = useCallback((result) => {
               </div>
             </div>
           )}
-
+          
           {/* Tabs */}
           <div className="et-tabs">
-            {[["chat","💬","Chat"],["table","📊","Records"],["catbreak","🎯","By Cat"],["accounts","💳","Accounts"],["compare","📈","Compare"],["import", "📥", "Import"],["loans","🤝","Splits"],["groups","👥","Groups"]].map(([t,ic,l])=>(
+            {[["chat","💬","Chat"],["table","📊","Records"],["catbreak","🎯","By Cat"],["accounts","💳","Accounts"],["compare","📈","Compare"] ,["community", "🏆", "Community"],["import", "📥", "Import"],["loans","🤝","Splits"],["groups","👥","Groups"]].map(([t,ic,l])=>(
               <button key={t} className={`et-tab ${tab===t?"et-tab--active":""}`} onClick={()=>{setTab(t);setSettingsOpen(false);}}>
                 <span>{ic}</span><span className="et-tab-label">{l}</span>
                 {t==="loans"&&totalLoansOwed>0&&<span className="et-tab-badge">{loans.length}</span>}
@@ -3395,6 +3396,16 @@ const handleCloudSuccess = useCallback((result) => {
                       }}
                     />
                   )}
+              
+            {tab === "community" && (
+                <CommunityLeaderboard
+                  credentials={cloudCredentials}
+                  expenses={expenses}
+                  catIcons={catIcons}
+                  catColors={catColors}
+                  showToast={showToast}
+                />
+              )}
 
             {tab==="compare"&&(
               <div className="et-records">
