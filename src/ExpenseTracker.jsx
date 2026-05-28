@@ -2551,6 +2551,24 @@ const handleCloudSuccess = useCallback((result) => {
     setExpenses(
       [...result.expenses].sort((a, b) => b.timestamp - a.timestamp)
     );
+    // ── Merge categories from synced expenses ──
+    if (result.expenses && result.expenses.length > 0) {
+      const syncedCats = [...new Set(result.expenses.map(e => e.category).filter(Boolean))];
+      setCustomCatData(prev => {
+        const toAdd = syncedCats.filter(c => !prev.categories.includes(c));
+        if (!toAdd.length) return prev;
+        const newIcons  = { ...prev.icons };
+        const newColors = { ...prev.colors };
+        const extraColorsList = ["#ec4899","#14b8a6","#f43f5e","#84cc16","#fb923c","#a78bfa","#38bdf8","#fbbf24","#4ade80","#c084fc"];
+        const emojiList = ["📦","🛍️","💡","🎯","🔧","🎨","🏷️","💼","🧾","⚡","🌟","🎪","🔑","🎁","🧩","💫","🌀","🎭","🔮","🌈"];
+        toAdd.forEach((cat, i) => {
+          // Reuse existing icon/color if already in DEFAULT_CAT_ICONS/DEFAULT_CAT_COLORS
+          newIcons[cat]  = DEFAULT_CAT_ICONS[cat]  || emojiList[i % emojiList.length];
+          newColors[cat] = DEFAULT_CAT_COLORS[cat] || extraColorsList[i % extraColorsList.length];
+        });
+        return { categories: [...prev.categories, ...toAdd], icons: newIcons, colors: newColors };
+      });
+    }
     if (result.has_budget && result.budget) {
           const cloudBudget = result.budget;
           // Ensure months structure exists so AccountsTab renders correctly
