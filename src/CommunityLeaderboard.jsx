@@ -2,7 +2,7 @@
 // Route: add "community" tab to ExpenseTracker.jsx tabs array
 // Props:  credentials, expenses, budget, catIcons, catColors, showToast
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 const API_BASE = "https://pdf-qna-backend.onrender.com";
@@ -19,6 +19,14 @@ const currentMonthKey = () => {
   return `${ist.getUTCFullYear()}-${String(ist.getUTCMonth() + 1).padStart(2, "0")}`;
 };
 
+// If the expense reason contains a group-split share amount, use that instead
+// of the full e.amount (e.g. "Group split — your share: ₹1,833.33")
+function getEffectiveAmount(e) {
+  const match = e.reason?.match(/your share[:\s]+[₹]?\s*([0-9,]+(?:\.[0-9]+)?)/i);
+  if (!match) return e.amount;
+  return parseFloat(match[1].replace(/,/g, ""));
+}
+
 // Build category totals from expense array for a given month
 function buildCategoryTotals(expenses, monthKey) {
   const map = {};
@@ -28,7 +36,7 @@ function buildCategoryTotals(expenses, monthKey) {
     const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
     if (mk !== monthKey) continue;
     if (!map[e.category]) map[e.category] = 0;
-    map[e.category] += e.amount;
+    map[e.category] += getEffectiveAmount(e);
   }
   return Object.entries(map).map(([category, total]) => ({ category, total: Math.round(total * 100) / 100 }));
 }
@@ -41,7 +49,7 @@ function buildTotalExpense(expenses, monthKey) {
       const mk = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
       return mk === monthKey;
     })
-    .reduce((s, e) => s + e.amount, 0);
+    .reduce((s, e) => s + getEffectiveAmount(e), 0);
 }
 
 // Avatar color cycling
@@ -130,6 +138,10 @@ export default function CommunityLeaderboard({ credentials, expenses, catIcons, 
   const [loadingRank,     setLoadingRank]     = useState(false);
   const [sharing,         setSharing]         = useState(false);
 
+  // FIX 1: Cache all categories from the "overall" fetch so pills never disappear
+  // when switching to a filtered category view.
+  const [cachedAllCategories, setCachedAllCategories] = useState([]);
+
   // privacy prefs (persisted in localStorage)
   const [showRealName,    setShowRealName]    = useState(() => {
     try { return JSON.parse(localStorage.getItem("cl_show_real_name") ?? "true"); } catch { return true; }
@@ -139,8 +151,31 @@ export default function CommunityLeaderboard({ credentials, expenses, catIcons, 
   });
   const [excludeIncome,   setExcludeIncome]   = useState(true);
 
+  // FIX 2: Custom display name — free-text, falls back to anon_XXXX if blank
+  const [customName,      setCustomName]      = useState(() => {
+    try { return localStorage.getItem("cl_custom_name") ?? ""; } catch { return ""; }
+  });
+  const [nameEditValue,   setNameEditValue]   = useState(customName);
+  const [nameEditDirty,   setNameEditDirty]   = useState(false);
+
   useEffect(() => { localStorage.setItem("cl_show_real_name", JSON.stringify(showRealName)); }, [showRealName]);
   useEffect(() => { localStorage.setItem("cl_share_enabled",  JSON.stringify(shareEnabled));  }, [shareEnabled]);
+  useEffect(() => { localStorage.setItem("cl_custom_name",    customName);                    }, [customName]);
+
+  // Effective display-name logic:
+  // 1. If user typed a custom name → use it
+  // 2. Else if showRealName → use credentials.username
+  // 3. Else → anon_XXXX
+  const effectiveDisplayName = useMemo(() => {
+    if (customName.trim()) return customName.trim();
+    if (showRealName && credentials?.username) return credentials.username;
+    if (credentials?.username) {
+      // deterministic anon hash
+      const h = Math.abs([...credentials.username].reduce((acc, c) => (acc << 5) - acc + c.charCodeAt(0), 0));
+      return `anon_${(h % 9000 + 1000).toString().slice(0, 4)}`;
+    }
+    return "anon";
+  }, [customName, showRealName, credentials]);
 
   // ── Computed data for selected month ─────────────────────────────────────
   const categoryTotals = useMemo(() => buildCategoryTotals(expenses, selectedMonth), [expenses, selectedMonth]);
@@ -154,6 +189,19 @@ export default function CommunityLeaderboard({ credentials, expenses, catIcons, 
     }));
     return [...s].sort((a, b) => b.localeCompare(a)).slice(0, 12);
   }, [expenses]);
+
+  // FIX 1 continued: also derive categories from local expenses so pills
+  // are populated even before the first successful leaderboard fetch.
+  const localCategories = useMemo(() => {
+    const s = new Set(expenses.filter(e => e.type === "expense" && e.category).map(e => e.category));
+    return [...s].sort();
+  }, [expenses]);
+
+  // Merge cached server categories with local ones
+  const allCategories = useMemo(() => {
+    const merged = new Set([...cachedAllCategories, ...localCategories]);
+    return [...merged].sort();
+  }, [cachedAllCategories, localCategories]);
 
   // ── API calls ─────────────────────────────────────────────────────────────
 
@@ -172,6 +220,12 @@ export default function CommunityLeaderboard({ credentials, expenses, catIcons, 
       if (!res.ok) throw new Error(d.detail || "Failed to load leaderboard");
       setLeaderboard(d);
       if (d.available_months?.length) setAvailableMonths(d.available_months);
+
+      // FIX 1: Only update the category cache when fetching overall,
+      // so category pills remain visible when a specific cat is selected.
+      if (selectedCat === "overall" && d.category_winners?.length) {
+        setCachedAllCategories(d.category_winners.map((cw) => cw.category).sort());
+      }
     } catch (e) {
       showToast(`⚠️ ${e.message}`, "error");
     } finally {
@@ -202,10 +256,12 @@ export default function CommunityLeaderboard({ credentials, expenses, catIcons, 
     }
   }, [selectedMonth, credentials, isLoggedIn, showToast]);
 
-  const handleShare = useCallback(async () => {
+  // Core share call — accepts the display name explicitly so it can be called
+  // with a freshly-typed name before React state has flushed.
+  const doShare = useCallback(async (displayName, { silent = false } = {}) => {
     if (!isLoggedIn) { showToast("⚠️ Sign in via ☁️ Save/Sync first", "error"); return; }
-    if (totalExpense <= 0) { showToast("⚠️ No expense data for this month to share", "error"); return; }
-    setSharing(true);
+    if (totalExpense <= 0) { if (!silent) showToast("⚠️ No expense data for this month to share", "error"); return; }
+    if (!silent) setSharing(true);
     try {
       const res = await fetch(`${API_BASE}/community/share`, {
         method: "POST",
@@ -216,22 +272,50 @@ export default function CommunityLeaderboard({ credentials, expenses, catIcons, 
           month_key:       selectedMonth,
           category_totals: categoryTotals,
           total_expense:   Math.round(totalExpense * 100) / 100,
+          display_name:    displayName,
           show_real_name:  showRealName,
           exclude_income:  excludeIncome,
         }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Share failed");
-      showToast(`✓ Shared ${monthLabel(selectedMonth)} to leaderboard!`, "success");
+      if (!silent) showToast(`✓ Shared ${monthLabel(selectedMonth)} to leaderboard!`, "success");
+      else         showToast(`✓ Display name updated on leaderboard`, "success");
       setShareEnabled(true);
       fetchLeaderboard();
       fetchMyRank();
     } catch (e) {
       showToast(`⚠️ ${e.message}`, "error");
     } finally {
-      setSharing(false);
+      if (!silent) setSharing(false);
     }
   }, [isLoggedIn, totalExpense, credentials, selectedMonth, categoryTotals, showRealName, excludeIncome, showToast, fetchLeaderboard, fetchMyRank]);
+
+  const handleShare = useCallback(() => doShare(effectiveDisplayName),
+    [doShare, effectiveDisplayName]);
+
+  // Save custom name — if already sharing this month, push update to server immediately
+  const handleSaveName = useCallback((newName) => {
+    const trimmed = newName.trim();
+    setCustomName(trimmed);
+    setNameEditDirty(false);
+
+    // Use myRank.shared if available; fall back to checking the leaderboard entries
+    // directly (myRank may be null if user has not visited the My Rank tab yet).
+    const isCurrentlySharing = myRank?.shared ?? (isLoggedIn && !!leaderboard?.entries?.find(e => e.username === credentials?.username));
+    if (!isLoggedIn || !isCurrentlySharing) return; // not sharing → nothing to push
+
+    // Compute the effective name with the *new* value before state settles
+    let resolvedName;
+    if (trimmed) resolvedName = trimmed;
+    else if (showRealName && credentials?.username) resolvedName = credentials.username;
+    else if (credentials?.username) {
+      const h = Math.abs([...credentials.username].reduce((acc, c) => (acc << 5) - acc + c.charCodeAt(0), 0));
+      resolvedName = `anon_${(h % 9000 + 1000).toString().slice(0, 4)}`;
+    } else resolvedName = "anon";
+
+    doShare(resolvedName, { silent: true });
+  }, [isLoggedIn, myRank, leaderboard, showRealName, credentials, doShare]);
 
   const handleUnshare = useCallback(async () => {
     if (!isLoggedIn) return;
@@ -258,15 +342,12 @@ export default function CommunityLeaderboard({ credentials, expenses, catIcons, 
 
   // ── Effects ───────────────────────────────────────────────────────────────
   useEffect(() => { fetchLeaderboard(); }, [fetchLeaderboard]);
+  // Fetch myRank eagerly on mount + month change so handleSaveName always has
+  // current sharing status regardless of which tab the user is on.
+  useEffect(() => { if (isLoggedIn) fetchMyRank(); }, [fetchMyRank, isLoggedIn]);
   useEffect(() => {
     if (activeTab === "myrank") fetchMyRank();
   }, [activeTab, fetchMyRank]);
-
-  // ── Categories from leaderboard data ─────────────────────────────────────
-  const allCategories = useMemo(() => {
-    if (!leaderboard?.category_winners) return [];
-    return leaderboard.category_winners.map((cw) => cw.category).sort();
-  }, [leaderboard]);
 
   // ── My entry in leaderboard ───────────────────────────────────────────────
   const myEntry = useMemo(() => {
@@ -452,8 +533,50 @@ export default function CommunityLeaderboard({ credentials, expenses, catIcons, 
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       <p className="cl-section-label">privacy & sharing</p>
 
+      {/* FIX 2: Custom display name input */}
+      <div className="cl-setting-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: 8 }}>
+        <div style={{ width: "100%" }}>
+          <div style={{ fontSize: 13, color: "#fff", fontWeight: 500, marginBottom: 2 }}>Display name</div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.35)", marginBottom: 8 }}>
+            Shown publicly on the leaderboard. Leave blank to use your username or anonymous ID.
+          </div>
+          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+            <input
+              className="cl-name-input"
+              type="text"
+              placeholder={effectiveDisplayName}
+              value={nameEditValue}
+              maxLength={24}
+              onChange={(e) => { setNameEditValue(e.target.value); setNameEditDirty(true); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleSaveName(nameEditValue);
+              }}
+            />
+            {nameEditDirty && (
+              <button
+                className="cl-name-save-btn"
+                onClick={() => handleSaveName(nameEditValue)}
+              >
+                Save
+              </button>
+            )}
+            {customName && !nameEditDirty && (
+              <button
+                className="cl-name-clear-btn"
+                onClick={() => { handleSaveName(""); setNameEditValue(""); }}
+              >
+                ✕ clear
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.25)", marginTop: 6 }}>
+            Will appear as: <span style={{ color: "#f59e0b", fontWeight: 600 }}>{effectiveDisplayName}</span>
+          </div>
+        </div>
+      </div>
+
       {[
-        { label: "Show real username", sub: "If off, shown as anon_XXXX", val: showRealName, set: setShowRealName },
+        { label: "Show real username (if no custom name)", sub: "If off and no custom name set, shown as anon_XXXX", val: showRealName, set: setShowRealName },
         { label: "Exclude income data", sub: "Only category expense totals shared", val: excludeIncome, set: setExcludeIncome },
       ].map(({ label, sub, val, set }) => (
         <div key={label} className="cl-setting-row">
@@ -580,6 +703,7 @@ export default function CommunityLeaderboard({ credentials, expenses, catIcons, 
         </div>
 
         {/* ── Category filter (leaderboard tab only) ── */}
+        {/* FIX 1: Uses allCategories which is now persistent (merged from cache + local) */}
         {activeTab === "leaderboard" && allCategories.length > 0 && (
           <div className="cl-cat-filter">
             {["overall", ...allCategories].map((cat) => (
@@ -680,6 +804,13 @@ const CL_CSS = `
 /* Settings */
 .cl-setting-row{display:flex;align-items:center;justify-content:space-between;padding:10px 13px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.07);border-radius:9px;gap:10px;}
 .cl-privacy-note{font-size:11px;color:rgba(255,255,255,0.4);padding:9px 12px;background:rgba(255,255,255,0.02);border:1px solid rgba(255,255,255,0.07);border-radius:8px;line-height:1.6;border-left:2px solid rgba(255,255,255,0.15);}
+
+/* Custom name input */
+.cl-name-input{flex:1;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:7px 11px;color:#fff;font-size:13px;font-family:inherit;outline:none;transition:border-color 0.15s;}
+.cl-name-input:focus{border-color:rgba(245,158,11,0.4);}
+.cl-name-input::placeholder{color:rgba(255,255,255,0.25);}
+.cl-name-save-btn{padding:7px 14px;border-radius:8px;border:none;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-weight:700;font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap;}
+.cl-name-clear-btn{padding:7px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:transparent;color:rgba(255,255,255,0.4);font-size:12px;cursor:pointer;font-family:inherit;white-space:nowrap;}
 
 /* Share button */
 .cl-share-btn{padding:10px 18px;border-radius:9px;border:none;background:linear-gradient(135deg,#f59e0b,#ef4444);color:#fff;font-weight:700;font-size:13px;cursor:pointer;font-family:inherit;transition:all 0.15s;}

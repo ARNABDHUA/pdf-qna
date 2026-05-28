@@ -102,6 +102,94 @@ function getISTContext() {
 }
 
 // ── Build expense summary for AI context ───────────────────────────────────────
+// function buildExpenseSummary(expenses, accounts) {
+//   if (!expenses || expenses.length === 0) return "No expenses recorded yet.";
+
+//   const byMonth = {};
+//   for (const e of expenses) {
+//     const mk = monthKey(e.timestamp);
+//     if (!byMonth[mk]) byMonth[mk] = [];
+//     byMonth[mk].push(e);
+//   }
+
+//   const catTotals = {};
+//   const catMonthly = {};
+//   for (const e of expenses) {
+//     if (!catTotals[e.category]) catTotals[e.category] = { expense: 0, income: 0 };
+//     if (e.type === "expense") catTotals[e.category].expense += e.amount;
+//     else catTotals[e.category].income += e.amount;
+
+//     const mk = monthKey(e.timestamp);
+//     if (!catMonthly[mk]) catMonthly[mk] = {};
+//     if (!catMonthly[mk][e.category]) catMonthly[mk][e.category] = { expense: 0, income: 0 };
+//     if (e.type === "expense") catMonthly[mk][e.category].expense += e.amount;
+//     else catMonthly[mk][e.category].income += e.amount;
+//   }
+
+//   const totalExp = expenses.filter(e => e.type === "expense").reduce((s, e) => s + e.amount, 0);
+//   const totalInc = expenses.filter(e => e.type === "income").reduce((s, e) => s + e.amount, 0);
+
+//   let summary = `EXPENSE HISTORY SUMMARY (for answering user questions):\n`;
+//   summary += `Total Records: ${expenses.length} | Total Spent: ₹${totalExp.toFixed(2)} | Total Income: ₹${totalInc.toFixed(2)} | Net: ₹${(totalInc - totalExp).toFixed(2)}\n\n`;
+
+//   if (accounts && accounts.length > 0) {
+//     summary += `ACCOUNT BALANCES (CURRENT):\n`;
+//     for (const acc of accounts) {
+//       const accTxns = expenses
+//         .filter(e => e.accountId === acc.id)
+//         .sort((a, b) => b.timestamp - a.timestamp);
+//       const last5 = accTxns.slice(0, 5);
+//       summary += `  - "${acc.name}" (type:${acc.type}): current balance = ₹${Number(acc.currentBalance).toLocaleString("en-IN", { maximumFractionDigits: 2 })}, total txns linked: ${accTxns.length}\n`;
+//       if (last5.length > 0) {
+//         summary += `    Last ${last5.length} transactions:\n`;
+//         for (const t of last5) {
+//           summary += `      [${dateIN(t.timestamp)}] ${t.type === "expense" ? "-" : "+"}₹${t.amount} | ${t.category} | ${t.description || ""}\n`;
+//         }
+//       } else {
+//         summary += `    No linked transactions yet.\n`;
+//       }
+//     }
+//     summary += `\n`;
+//   }
+
+//   summary += `MONTHLY BREAKDOWN:\n`;
+//   const sortedMonths = Object.keys(byMonth).sort((a, b) => b.localeCompare(a));
+//   for (const mk of sortedMonths.slice(0, 12)) {
+//     const items = byMonth[mk];
+//     const mExp = items.filter(e => e.type === "expense").reduce((s, e) => s + e.amount, 0);
+//     const mInc = items.filter(e => e.type === "income").reduce((s, e) => s + e.amount, 0);
+//     const [yr, mo] = mk.split("-").map(Number);
+//     const mName = new Date(yr, mo - 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
+//     summary += `${mName}: Spent=₹${mExp.toFixed(2)}, Income=₹${mInc.toFixed(2)}, Txns=${items.length}\n`;
+//     if (catMonthly[mk]) {
+//       for (const [cat, vals] of Object.entries(catMonthly[mk])) {
+//         if (vals.expense > 0) summary += `  - ${cat}: ₹${vals.expense.toFixed(2)}\n`;
+//       }
+//     }
+//   }
+
+//   summary += `\nALL-TIME CATEGORY TOTALS (expenses only):\n`;
+//   for (const [cat, vals] of Object.entries(catTotals)) {
+//     if (vals.expense > 0) summary += `  ${cat}: ₹${vals.expense.toFixed(2)}\n`;
+//   }
+
+//   summary += `\nRECENT TRANSACTIONS (last 20):\n`;
+//   const recent = [...expenses].sort((a, b) => b.timestamp - a.timestamp).slice(0, 20);
+//   for (const e of recent) {
+//     summary += `  [${dateIN(e.timestamp)}] ${e.type === "expense" ? "-" : "+"}₹${e.amount} | ${e.category} | ${e.description || ""}${e.accountName ? ` | account:${e.accountName}` : ""}\n`;
+//   }
+
+//   return summary;
+// }
+
+// If the expense reason contains a group-split share amount, use that instead
+// of the full e.amount (e.g. "Group split — your share: ₹1,833.33")
+function getEffectiveAmount(e) {
+  const match = e.reason?.match(/your share[:\s]+[₹\u20B9]?\s*([0-9,]+(?:\.[0-9]+)?)/i);
+  if (!match) return e.amount;
+  return parseFloat(match[1].replace(/,/g, ""));
+}
+
 function buildExpenseSummary(expenses, accounts) {
   if (!expenses || expenses.length === 0) return "No expenses recorded yet.";
 
@@ -116,17 +204,17 @@ function buildExpenseSummary(expenses, accounts) {
   const catMonthly = {};
   for (const e of expenses) {
     if (!catTotals[e.category]) catTotals[e.category] = { expense: 0, income: 0 };
-    if (e.type === "expense") catTotals[e.category].expense += e.amount;
+    if (e.type === "expense") catTotals[e.category].expense += getEffectiveAmount(e); // ← was e.amount
     else catTotals[e.category].income += e.amount;
 
     const mk = monthKey(e.timestamp);
     if (!catMonthly[mk]) catMonthly[mk] = {};
     if (!catMonthly[mk][e.category]) catMonthly[mk][e.category] = { expense: 0, income: 0 };
-    if (e.type === "expense") catMonthly[mk][e.category].expense += e.amount;
+    if (e.type === "expense") catMonthly[mk][e.category].expense += getEffectiveAmount(e); // ← was e.amount
     else catMonthly[mk][e.category].income += e.amount;
   }
 
-  const totalExp = expenses.filter(e => e.type === "expense").reduce((s, e) => s + e.amount, 0);
+  const totalExp = expenses.filter(e => e.type === "expense").reduce((s, e) => s + getEffectiveAmount(e), 0); // ← was e.amount
   const totalInc = expenses.filter(e => e.type === "income").reduce((s, e) => s + e.amount, 0);
 
   let summary = `EXPENSE HISTORY SUMMARY (for answering user questions):\n`;
@@ -143,7 +231,9 @@ function buildExpenseSummary(expenses, accounts) {
       if (last5.length > 0) {
         summary += `    Last ${last5.length} transactions:\n`;
         for (const t of last5) {
-          summary += `      [${dateIN(t.timestamp)}] ${t.type === "expense" ? "-" : "+"}₹${t.amount} | ${t.category} | ${t.description || ""}\n`;
+          // Show effective amount in transaction log too so AI sees the real share
+          const effAmt = t.type === "expense" ? getEffectiveAmount(t) : t.amount;
+          summary += `      [${dateIN(t.timestamp)}] ${t.type === "expense" ? "-" : "+"}₹${effAmt} | ${t.category} | ${t.description || ""}${t.reason ? ` | note:${t.reason}` : ""}\n`;
         }
       } else {
         summary += `    No linked transactions yet.\n`;
@@ -156,7 +246,7 @@ function buildExpenseSummary(expenses, accounts) {
   const sortedMonths = Object.keys(byMonth).sort((a, b) => b.localeCompare(a));
   for (const mk of sortedMonths.slice(0, 12)) {
     const items = byMonth[mk];
-    const mExp = items.filter(e => e.type === "expense").reduce((s, e) => s + e.amount, 0);
+    const mExp = items.filter(e => e.type === "expense").reduce((s, e) => s + getEffectiveAmount(e), 0); // ← was e.amount
     const mInc = items.filter(e => e.type === "income").reduce((s, e) => s + e.amount, 0);
     const [yr, mo] = mk.split("-").map(Number);
     const mName = new Date(yr, mo - 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
@@ -176,125 +266,15 @@ function buildExpenseSummary(expenses, accounts) {
   summary += `\nRECENT TRANSACTIONS (last 20):\n`;
   const recent = [...expenses].sort((a, b) => b.timestamp - a.timestamp).slice(0, 20);
   for (const e of recent) {
-    summary += `  [${dateIN(e.timestamp)}] ${e.type === "expense" ? "-" : "+"}₹${e.amount} | ${e.category} | ${e.description || ""}${e.accountName ? ` | account:${e.accountName}` : ""}\n`;
+    const effAmt = e.type === "expense" ? getEffectiveAmount(e) : e.amount;
+    summary += `  [${dateIN(e.timestamp)}] ${e.type === "expense" ? "-" : "+"}₹${effAmt} | ${e.category} | ${e.description || ""}${e.accountName ? ` | account:${e.accountName}` : ""}${e.reason ? ` | note:${e.reason}` : ""}\n`;
   }
 
   return summary;
 }
 
 // ── System prompt ──────────────────────────────────────────────────────────────
-// function buildSystemPrompt(categories, accounts, defaultAccountId, expenses) {
-//   const ist = getISTContext();
-//   const defaultAcc = accounts.find(a => a.id === defaultAccountId);
-//   // const accountList = accounts.map(a => `  - name:"${a.name}", id:"${a.id}", type:"${a.type}", currentBalance:${a.currentBalance}`).join("\n") || "  (none)";
-//   const accountList = accounts.map(a => 
-//   `  - name:"${a.name}", id:"${a.id}", type:"${a.type}", currentBalance:${a.currentBalance}${a.id === defaultAccountId ? ' [CURRENT DEFAULT]' : ''}`
-// ).join("\n") || "  (none)";
-//   const hasAccounts = accounts.length > 0;
-//   const expenseSummary = buildExpenseSummary(expenses, accounts);
 
-//   return `You are a STRICT expense, income, and loan tracking assistant for an Indian user.
-
-// STRICT RULES:
-// 1. ONLY respond to: expenses, income, money, budgeting, spending, financial summaries, savings, loans, splits, account transfers, balance queries.
-// 2. For financial analysis questions (e.g. "how much did I spend on food?", "what's my total expense last month?", "which category I spent most?", "what is my SBI balance?", "show SBI transactions"), use the EXPENSE HISTORY and ACCOUNT BALANCES below to answer accurately with exact numbers.
-// 3. When user asks about a specific account balance or transactions (e.g. "what is my SBI balance", "show my ICICI transactions", "current amount in wallet"), find the account in ACCOUNT BALANCES section and respond with:
-//    - Current balance of that account
-//    - Last 5 transactions linked to it (from the data provided)
-//    - Format it nicely with emojis
-// 4. Anything unrelated → respond ONLY: "I'm your expense tracker assistant. I can only help with expenses, income, loans, and financial topics. 💸"
-
-// CURRENT IST CONTEXT:
-// - nowMs: ${ist.nowMs} | nowIST: ${ist.nowIST}
-// - Today: ${ist.todayDateIST} | Yesterday: ${ist.yesterdayDateIST}
-// - todayNoonMs: ${ist.todayNoonMs} | yesterdayNoonMs: ${ist.yesterdayNoonMs}
-
-// DATE/TIME RULES:
-// - If user does NOT mention any time or date → ALWAYS use nowMs (${ist.nowMs}) as the timestamp. This gives the exact current Indian time.
-// - "today" → use todayNoonMs (${ist.todayNoonMs})
-// - "yesterday" → use yesterdayNoonMs (${ist.yesterdayNoonMs})
-// - "N days ago" → todayNoon - (N * 86400000)
-// - NEVER guess or fabricate timestamps. If no date/time mentioned, use nowMs exactly.
-
-// ${expenseSummary}
-
-// ACCOUNTS STATUS: ${hasAccounts ? "User has accounts set up." : "User has NO accounts set up yet."}
-
-// ${hasAccounts ? `BUDGET ACCOUNTS:
-// ${accountList}
-// Default account for online/card payments: ${defaultAcc ? `"${defaultAcc.name}" (id: "${defaultAcc.id}", type: "${defaultAcc.type}")` : "none set"}
-
-// ACCOUNT DEDUCTION RULES (only include account_action when accounts exist):
-// - "paid X for food" / "bought X" / "spent X" (no payment method mentioned) → use default account (id: "${defaultAcc?.id||""}")
-// - "paid X cash" / "paid X in cash" → use account with type "cash" (find by type)
-// - "paid X wallet" / "via wallet" / "from wallet" → use account with type "wallet" (find by name or type)
-// - "paid X from ICICI" / "from SBI" / "from [name]" → use account matching that name
-// - "add X" / "got X" / "received X" (no account mentioned) → add to default account
-// - "add X to ICICI" / "add X to [name]" → add to account matching that name
-// - If required account type (cash/wallet) not in accounts list → set account_not_found: true, account_type_missing: "wallet" (or "cash")` : `TRANSFER/ACCOUNT RULE: If the user asks to transfer money between accounts OR mentions any account name (SBI, ICICI, wallet, cash account, etc.), you MUST respond with exactly this message and nothing else:
-// "⚠️ You don't have any accounts set up yet! Please add your accounts first in the 💳 **Accounts** tab (tap it above), then come back to transfer or track by account. Adding accounts is quick and optional — but needed for balance tracking! 🏦"`}
-
-// TRANSFER RULE (STRICT — APPLIES EVEN WHEN ACCOUNTS EXIST):
-// If the user asks to transfer money between accounts (e.g. "transfer ₹500 from SBI to ICICI", "move money from wallet to bank", "send 1000 from X to Y"), you MUST respond with ONLY this message and nothing else — do NOT emit any JSON or <expense_data> block:
-// "🔄 To transfer money between accounts, please go to the **💳 Accounts** tab and tap the **↔ Transfer** button. This ensures your balances are updated correctly!"
-
-// LOAN/SPLIT DETECTION:
-// - "pizza for Ram and Anand and me ₹900" → detect ONLY other people's names (exclude me/I/myself/you — the user is never added to splits)
-// - Each OTHER person owes: total ÷ (number of other people + 1, counting the user as one participant)
-// - Example: "cooldrink for Anand and me ₹40" → total=40, participants=2 (Anand + user), Anand owes ₹20. Only add Anand to splits. Do NOT add "me" or "you" to splits.
-// - Example: "pizza for Ram, Anand and me ₹900" → participants=3, each=₹300. Add only Ram(₹300) and Anand(₹300) to splits. Not the user.
-// - Repayments: "Anand paid me back ₹300" or "Anand pay ₹20" → loan_repayment block
-
-// REPAYMENT RULE ("X paid me" / "X pay amount"):
-// When someone repays (e.g. "Anand pay 20", "Ram paid me ₹300"), emit a <loan_repayment> block AND also an <expense_data> block treating it as income (so it's recorded in the Records section and credited to the default account):
-// - type: "income"
-// - category: "Other"
-// - description: "<Name> repaid ₹<amount>"
-// - account_action: credit to default account (delta: +amount)
-
-// ANALYSIS RESPONSE RULES (when user asks a question about their spending or account):
-// - Use the EXPENSE HISTORY and ACCOUNT BALANCES data above to give exact, accurate answers
-// - Format amounts in Indian style with ₹ symbol
-// - Show breakdowns when relevant (by category, by month, etc.)
-// - For account balance queries: show current balance + last 5 transactions in a clean format
-// - Compare periods if asked ("last month vs this month")
-// - Do NOT emit any JSON block for analysis questions — just respond with helpful formatted text
-// - Use bold for key numbers, bullet points for lists
-
-// ACCOUNT UI COMMANDS (when user asks to change default account OR create a new account):
-
-// When user says "make X default" / "set X as default" / "change default to X":
-// Find the account in BUDGET ACCOUNTS list above, then respond with:
-// <account_ui_action>{"action":"set_default","accountId":"<id from accounts list>","accountName":"<name>"}</account_ui_action>
-// Then also explain what changed in plain text.
-
-// When user says "create account X with Y" / "add account X balance Y" / "new account X":
-// FIRST check if an account with that name already exists in BUDGET ACCOUNTS above.
-// - If account ALREADY EXISTS: respond with:
-// <account_ui_action>{"action":"topup_account","accountId":"<existing id>","accountName":"<existing name>","topupAmount":<amount>}</account_ui_action>
-//   Then explain: "Account already exists — added ₹<amount> to existing <name> account."
-// - If account does NOT exist: respond with:
-// <account_ui_action>{"action":"create_account","name":"<account name>","type":"<bank|wallet|cash|card|other>","currentBalance":<amount>,"color":"<pick from: #3b82f6 #f59e0b #22c55e #a855f7 #ef4444>"}</account_ui_action>
-//   Then explain in plain text. DO NOT emit expense_data for the initial balance — the UI will handle it.
-
-// ${hasAccounts ? `On normal expense/income respond with:
-// <expense_data>{"amount":<n>,"category":"<one of: ${categories.join(", ")}>","description":"<max 60 chars>","reason":"<max 80 chars or empty>","type":"expense|income","timestamp":<unix_ms>,"account_action":{"accountId":"<id or empty>","accountName":"<name>","delta":<negative for expense, positive for income>,"account_not_found":<true|false>,"account_type_missing":"<wallet|cash|bank|empty>"}}</expense_data>` : `On normal expense/income respond with:
-// <expense_data>{"amount":<n>,"category":"<one of: ${categories.join(", ")}>","description":"<max 60 chars>","reason":"<max 80 chars or empty>","type":"expense|income","timestamp":<unix_ms>}</expense_data>`}
-
-// ${hasAccounts ? `On split expense respond with BOTH blocks:
-// <expense_data>{"amount":<total>,"category":"<cat>","description":"<desc>","reason":"","type":"expense","timestamp":<ms>,"account_action":{"accountId":"<id>","accountName":"<name>","delta":<negative total>,"account_not_found":false,"account_type_missing":""}}</expense_data>
-// <loan_data>{"description":"<what was split>","timestamp":<ms>,"splits":[{"name":"<OtherPersonName>","amount":<their share>,"type":"owe"}]}</loan_data>
-// IMPORTANT: splits array must contain ONLY other people — never include the user/me/myself.` : `On split expense respond with BOTH blocks:
-// <expense_data>{"amount":<total>,"category":"<cat>","description":"<desc>","reason":"","type":"expense","timestamp":<ms>}</expense_data>
-// <loan_data>{"description":"<what was split>","timestamp":<ms>,"splits":[{"name":"<OtherPersonName>","amount":<their share>,"type":"owe"}]}</loan_data>
-// IMPORTANT: splits array must contain ONLY other people — never include the user/me/myself.`}
-
-// On repayment ("X paid me" / "X pay amount") respond with BOTH blocks:
-// <expense_data>{"amount":<amt>,"category":"Other","description":"<Name> repaid ₹<amt>","reason":"Loan repayment received","type":"income","timestamp":<ms>${hasAccounts && defaultAcc ? `,"account_action":{"accountId":"${defaultAcc.id}","accountName":"${defaultAcc.name}","delta":<+amt>,"account_not_found":false,"account_type_missing":""}` : ""}}</expense_data>
-// <loan_repayment>{"name":"<Name>","amount":<amt>,"timestamp":<ms>}</loan_repayment>
-
-// For analysis/questions → respond helpfully with exact data from EXPENSE HISTORY and ACCOUNT BALANCES, NO JSON block.`;
-// }
 
 
 function buildSystemPrompt(categories, accounts, defaultAccountId, expenses) {
@@ -1714,246 +1694,7 @@ function buildYearlyWorkbook(XLSX, expenses, year, catIcons) {
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
-// function CategoryBreakdown({ expenses, catIcons, catColors }) {
-//   const [period,      setPeriod]      = React.useState("month");
-//   const [selectedCat, setSelectedCat] = React.useState("all");
-//   const [filterMode,  setFilterMode]  = React.useState("period");
-//   const [pickerYear,  setPickerYear]  = React.useState(() => new Date().getFullYear());
-//   const [pickerMonth, setPickerMonth] = React.useState(() => new Date().getMonth()+1);
-//   const [exporting,   setExporting]   = React.useState(false);
-//   const [exportMode,  setExportMode]  = React.useState("monthly");
-//   const [showExport,  setShowExport]  = React.useState(false);
-//   const [exportYear,  setExportYear]  = React.useState(() => new Date().getFullYear());
-//   const [exportMonth, setExportMonth] = React.useState(() => new Date().getMonth()+1);
 
-//   const availableYears = React.useMemo(() => {
-//     const ys = new Set(expenses.map(e=>new Date(e.timestamp).getFullYear()));
-//     return [...ys].sort((a,b)=>b-a);
-//   }, [expenses]);
-
-//   const fmt    = n => "\u20B9"+Number(n).toLocaleString("en-IN",{maximumFractionDigits:2});
-//   const dateIN = d => new Date(d).toLocaleDateString("en-IN",{day:"2-digit",month:"2-digit",year:"numeric"});
-//   const timeIN = d => new Date(d).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit",hour12:true});
-
-//   const filtered = React.useMemo(()=>{
-//     if (filterMode==="custom") {
-//       return expenses.filter(e=>{ const d=new Date(e.timestamp); return e.type==="expense"&&d.getFullYear()===pickerYear&&(d.getMonth()+1)===pickerMonth; });
-//     }
-//     const ist=new Date(Date.now()+5.5*3600000);
-//     const isoDate=d=>{const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}-${String(dt.getDate()).padStart(2,"0")}`;};
-//     const weekKey=d=>{const dt=new Date(d);const day=dt.getDay();const diff=dt.getDate()-day+(day===0?-6:1);return isoDate(new Date(new Date(d).setDate(diff)));};
-//     const monthKey=d=>{const dt=new Date(d);return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,"0")}`;};
-//     const yearKey=d=>String(new Date(d).getFullYear());
-//     const today=isoDate(ist),thisWeek=weekKey(ist),thisMonth=monthKey(ist),thisYear=yearKey(ist);
-//     return expenses.filter(e=>{
-//       if(e.type!=="expense") return false;
-//       if(period==="day")   return isoDate(e.timestamp)===today;
-//       if(period==="week")  return weekKey(e.timestamp)===thisWeek;
-//       if(period==="month") return monthKey(e.timestamp)===thisMonth;
-//       if(period==="year")  return yearKey(e.timestamp)===thisYear;
-//       return true;
-//     });
-//   },[expenses,period,filterMode,pickerYear,pickerMonth]);
-
-//   const byCategory = React.useMemo(()=>{
-//     const map={};
-//     for(const e of filtered){ if(!map[e.category]) map[e.category]={total:0,count:0,items:[]}; map[e.category].total+=e.amount; map[e.category].count++; map[e.category].items.push(e); }
-//     return Object.entries(map).sort((a,b)=>b[1].total-a[1].total);
-//   },[filtered]);
-
-//   const totalExp=byCategory.reduce((s,[,v])=>s+v.total,0);
-//   const maxVal=byCategory.length?byCategory[0][1].total:1;
-//   const periodLabel=filterMode==="custom"?`${MONTH_NAMES[pickerMonth-1]} ${pickerYear}`:{day:"Today",week:"This Week",month:"This Month",year:"This Year"}[period];
-//   const catDetail=React.useMemo(()=>{ if(selectedCat==="all") return null; const found=byCategory.find(([cat])=>cat===selectedCat); return found?found[1]:null; },[selectedCat,byCategory]);
-
-//   React.useEffect(()=>{ if(selectedCat!=="all"&&!byCategory.some(([cat])=>cat===selectedCat)) setSelectedCat("all"); },[byCategory,selectedCat]);
-
-//   const handleExport=async()=>{
-//     setExporting(true);
-//     try {
-//       const XLSX=await loadSheetJS();
-//       let wb,filename;
-//       if(exportMode==="monthly"){
-//         const mk=`${exportYear}-${String(exportMonth).padStart(2,"0")}`;
-//         wb=buildMonthlyWorkbook(XLSX,expenses,mk,catIcons,catColors);
-//         filename=`expenses_${MONTH_NAMES[exportMonth-1]}_${exportYear}.xlsx`;
-//       } else {
-//         wb=buildYearlyWorkbook(XLSX,expenses,exportYear,catIcons);
-//         filename=`expenses_yearly_${exportYear}.xlsx`;
-//       }
-//       XLSX.writeFile(wb,filename);
-//     } catch(err){ alert("Export failed: "+err.message); }
-//     finally { setExporting(false); setShowExport(false); }
-//   };
-
-//   return (
-//     <div className="et-records">
-//       {/* ── Controls ── */}
-//       <div style={{display:"flex",flexDirection:"column",gap:10}}>
-//         <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-//           <div className="et-view-toggle" style={{flexShrink:0}}>
-//             <button className={`et-view-btn ${filterMode==="period"?"et-view-btn--active":""}`} onClick={()=>setFilterMode("period")}>Quick</button>
-//             <button className={`et-view-btn ${filterMode==="custom"?"et-view-btn--active":""}`} onClick={()=>setFilterMode("custom")}>📅 Month</button>
-//           </div>
-//           {filterMode==="period"&&(
-//             <div className="et-view-toggle">
-//               {[["day","Day"],["week","Week"],["month","Month"],["year","Year"]].map(([v,l])=>
-//                 <button key={v} className={`et-view-btn ${period===v?"et-view-btn--active":""}`} onClick={()=>setPeriod(v)}>{l}</button>
-//               )}
-//             </div>
-//           )}
-//           <button onClick={()=>setShowExport(o=>!o)} style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6,padding:"5px 13px",borderRadius:20,border:"1px solid rgba(34,197,94,0.35)",background:"rgba(34,197,94,0.10)",color:"#22c55e",fontSize:12,fontWeight:700,cursor:"pointer",fontFamily:"inherit",flexShrink:0}}>
-//             📊 Export Excel
-//           </button>
-//         </div>
-
-//         {filterMode==="custom"&&(
-//           <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center",padding:"10px 14px",background:"rgba(245,158,11,0.06)",border:"1px solid rgba(245,158,11,0.2)",borderRadius:10}}>
-//             <span style={{fontSize:11,color:"rgba(255,255,255,0.45)",flexShrink:0}}>Show:</span>
-//             <select className="et-bgt-select" value={pickerMonth} onChange={e=>setPickerMonth(Number(e.target.value))} style={{minWidth:100,padding:"5px 10px",fontSize:12}}>
-//               {MONTH_NAMES.map((n,i)=><option key={i} value={i+1}>{n}</option>)}
-//             </select>
-//             <select className="et-bgt-select" value={pickerYear} onChange={e=>setPickerYear(Number(e.target.value))} style={{minWidth:80,padding:"5px 10px",fontSize:12}}>
-//               {(availableYears.length?availableYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
-//             </select>
-//             <span style={{fontSize:12,color:"#f59e0b",fontWeight:700,background:"rgba(245,158,11,0.12)",padding:"3px 10px",borderRadius:20,border:"1px solid rgba(245,158,11,0.25)"}}>
-//               {MONTH_NAMES[pickerMonth-1]} {pickerYear}
-//             </span>
-//           </div>
-//         )}
-
-//         {byCategory.length>0&&(
-//           <select className="et-bgt-select et-cat-filter-sel" value={selectedCat} onChange={e=>setSelectedCat(e.target.value)} style={{maxWidth:200,padding:"5px 12px",fontSize:11}}>
-//             <option value="all">All Categories</option>
-//             {byCategory.map(([cat])=><option key={cat} value={cat}>{catIcons[cat]||"📌"} {cat}</option>)}
-//           </select>
-//         )}
-//       </div>
-
-//       {/* ── Export Panel ── */}
-//       {showExport&&(
-//         <div style={{background:"rgba(34,197,94,0.06)",border:"1px solid rgba(34,197,94,0.22)",borderRadius:12,padding:16,display:"flex",flexDirection:"column",gap:12,animation:"et-slide-down 0.2s ease"}}>
-//           <div style={{fontSize:13,fontWeight:700,color:"#22c55e"}}>📊 Export to Excel</div>
-//           <div style={{display:"flex",gap:7}}>
-//             {[["monthly","📅 Monthly"],["yearly","📆 Yearly"]].map(([v,l])=>(
-//               <button key={v} onClick={()=>setExportMode(v)} style={{padding:"5px 14px",borderRadius:20,fontSize:12,fontWeight:700,border:exportMode===v?"1px solid #22c55e":"1px solid rgba(255,255,255,0.1)",background:exportMode===v?"rgba(34,197,94,0.18)":"transparent",color:exportMode===v?"#22c55e":"rgba(255,255,255,0.4)",cursor:"pointer",fontFamily:"inherit"}}>{l}</button>
-//             ))}
-//           </div>
-//           <div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"center"}}>
-//             <span style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>For:</span>
-//             {exportMode==="monthly"&&(
-//               <select className="et-bgt-select" value={exportMonth} onChange={e=>setExportMonth(Number(e.target.value))} style={{minWidth:100,padding:"5px 10px",fontSize:12}}>
-//                 {MONTH_NAMES.map((n,i)=><option key={i} value={i+1}>{n}</option>)}
-//               </select>
-//             )}
-//             <select className="et-bgt-select" value={exportYear} onChange={e=>setExportYear(Number(e.target.value))} style={{minWidth:80,padding:"5px 10px",fontSize:12}}>
-//               {(availableYears.length?availableYears:[new Date().getFullYear()]).map(y=><option key={y} value={y}>{y}</option>)}
-//             </select>
-//           </div>
-
-//           {/* Sheets preview */}
-//           <div style={{fontSize:11,color:"rgba(255,255,255,0.5)",lineHeight:1.9,background:"rgba(255,255,255,0.03)",border:"1px solid rgba(255,255,255,0.07)",borderRadius:9,padding:"10px 13px"}}>
-//             {exportMode==="monthly"?(
-//               <>
-//                 <div>📋 <strong style={{color:"#fff"}}>Summary</strong> — category totals, % share, grand total</div>
-//                 <div>📋 <strong style={{color:"#fff"}}>All Transactions</strong> — every item grouped by day with day-spend totals</div>
-//                 <div>📋 <strong style={{color:"#fff"}}>One sheet per category</strong> — item name · date · day · time · reason · account · amount (day-grouped, colour-coded)</div>
-//               </>
-//             ):(
-//               <>
-//                 <div>📋 <strong style={{color:"#fff"}}>Summary</strong> — category × month pivot table with annual totals</div>
-//                 <div>📋 <strong style={{color:"#fff"}}>By Category</strong> — all year's items grouped per category with dates</div>
-//                 <div>📋 <strong style={{color:"#fff"}}>Jan–Dec sheets</strong> — full item detail per month (day-grouped, category + name + time)</div>
-//               </>
-//             )}
-//           </div>
-
-//           <div style={{display:"flex",gap:8}}>
-//             <button onClick={handleExport} disabled={exporting} style={{flex:1,padding:10,borderRadius:9,border:"none",background:exporting?"#333":"linear-gradient(135deg,#22c55e,#16a34a)",color:"#fff",fontWeight:700,fontSize:13,cursor:exporting?"not-allowed":"pointer",fontFamily:"inherit"}}>
-//               {exporting?"⏳ Building…":"⬇️ Download .xlsx"}
-//             </button>
-//             <button onClick={()=>setShowExport(false)} style={{padding:"10px 16px",borderRadius:9,border:"1px solid rgba(255,255,255,0.1)",background:"transparent",color:"rgba(255,255,255,0.5)",cursor:"pointer",fontSize:13,fontFamily:"inherit"}}>Cancel</button>
-//           </div>
-//         </div>
-//       )}
-
-//       {/* ── Main content ── */}
-//       {byCategory.length===0?(
-//         <div className="et-no-data">No expenses for {periodLabel.toLowerCase()}. Start tracking! 💬</div>
-//       ):selectedCat!=="all"&&catDetail?(
-//         <div className="et-catdetail">
-//           <div className="et-catdetail-header">
-//             <div className="et-catbreak-icon" style={{background:(catColors[selectedCat]||"#6b7280")+"22",color:catColors[selectedCat]||"#6b7280",width:44,height:44,borderRadius:12,display:"flex",alignItems:"center",justifyContent:"center",fontSize:22}}>{catIcons[selectedCat]||"📌"}</div>
-//             <div style={{flex:1}}>
-//               <div style={{fontSize:16,fontWeight:700,color:"#fff"}}>{selectedCat}</div>
-//               <div style={{fontSize:11,color:"rgba(255,255,255,0.4)"}}>{catDetail.count} transaction{catDetail.count!==1?"s":""} · {periodLabel}</div>
-//             </div>
-//             <div style={{textAlign:"right"}}>
-//               <div style={{fontSize:20,fontWeight:700,color:catColors[selectedCat]||"#6b7280",fontFamily:"'JetBrains Mono',monospace"}}>{fmt(catDetail.total)}</div>
-//               <div style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{totalExp>0?Math.round(catDetail.total/totalExp*100):0}% of total</div>
-//             </div>
-//           </div>
-//           <div className="et-catdetail-list">
-//             {catDetail.items.sort((a,b)=>b.timestamp-a.timestamp).map(e=>(
-//               <div key={e.id} className="et-catdetail-item">
-//                 <div className="et-catdetail-item-left">
-//                   <span className="et-catdetail-item-desc">{e.description||"—"}</span>
-//                   {e.reason&&<span className="et-catdetail-item-reason">{e.reason}</span>}
-//                 </div>
-//                 <div className="et-catdetail-item-right">
-//                   <span className="et-catdetail-item-amt" style={{color:catColors[selectedCat]||"#6b7280"}}>{fmt(e.amount)}</span>
-//                   <span className="et-catdetail-item-date">{dateIN(e.timestamp)} {timeIN(e.timestamp)}</span>
-//                 </div>
-//               </div>
-//             ))}
-//           </div>
-//         </div>
-//       ):(
-//         <>
-//           <div className="et-catbreak-total">
-//             <span className="et-catbreak-total-label">{periodLabel} Total Spend</span>
-//             <span className="et-catbreak-total-val">{fmt(totalExp)}</span>
-//           </div>
-//           <div className="et-catbreak-grid">
-//             {byCategory.map(([cat,data])=>{
-//               const pct=Math.round(data.total/totalExp*100),barW=Math.max(4,Math.round(data.total/maxVal*100));
-//               const color=catColors[cat]||"#6b7280",icon=catIcons[cat]||"📌";
-//               return(
-//                 <div key={cat} className="et-catbreak-card" onClick={()=>setSelectedCat(cat)} style={{cursor:"pointer"}}>
-//                   <div className="et-catbreak-card-top">
-//                     <div className="et-catbreak-icon" style={{background:color+"22",color}}>{icon}</div>
-//                     <div className="et-catbreak-info"><span className="et-catbreak-name">{cat}</span><span className="et-catbreak-count">{data.count} txn{data.count!==1?"s":""}</span></div>
-//                     <div className="et-catbreak-right"><span className="et-catbreak-amt" style={{color}}>{fmt(data.total)}</span><span className="et-catbreak-pct">{pct}%</span></div>
-//                     <span style={{fontSize:12,color:"rgba(255,255,255,0.25)",marginLeft:4}}>›</span>
-//                   </div>
-//                   <div className="et-catbreak-bar-wrap"><div className="et-catbreak-bar" style={{width:barW+"%",background:`linear-gradient(90deg,${color},${color}88)`}}/></div>
-//                   <div className="et-catbreak-items">
-//                     {data.items.slice(0,3).map(e=><div key={e.id} className="et-catbreak-item"><span className="et-catbreak-item-desc">{e.description||"—"}</span><span className="et-catbreak-item-date">{dateIN(e.timestamp)}</span><span className="et-catbreak-item-amt">{fmt(e.amount)}</span></div>)}
-//                     {data.items.length>3&&<div className="et-catbreak-more">+{data.items.length-3} more · tap card to view all</div>}
-//                   </div>
-//                 </div>
-//               );
-//             })}
-//           </div>
-//           <div className="et-catbreak-summary">
-//             <p className="et-catbreak-summary-title">Category Share</p>
-//             <div className="et-catbreak-pies">
-//               {byCategory.map(([cat,data])=>{const pct=Math.round(data.total/totalExp*100),color=catColors[cat]||"#6b7280";return(
-//                 <div key={cat} className="et-catbreak-pie-row" onClick={()=>setSelectedCat(cat)} style={{cursor:"pointer"}}>
-//                   <div className="et-catbreak-pie-dot" style={{background:color}}/>
-//                   <span className="et-catbreak-pie-name">{catIcons[cat]||"📌"} {cat}</span>
-//                   <div className="et-catbreak-pie-bar-wrap"><div className="et-catbreak-pie-bar" style={{width:pct+"%",background:color}}/></div>
-//                   <span className="et-catbreak-pie-pct" style={{color}}>{pct}%</span>
-//                   <span className="et-catbreak-pie-amt">{fmt(data.total)}</span>
-//                 </div>
-//               );})}
-//             </div>
-//           </div>
-//         </>
-//       )}
-//     </div>
-//   );
-// }
 
 function CategoryBreakdown({ expenses, catIcons, catColors }) {
   const [period,      setPeriod]      = React.useState("month");
