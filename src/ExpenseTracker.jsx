@@ -26,11 +26,11 @@ const ACC_TYPE_META = {
 };
 
 // ── Categories ─────────────────────────────────────────────────────────────────
-const DEFAULT_CATEGORIES = ["Food","Transport","Shopping","Bills","Health","Entertainment","Education","Travel","Rent","Salary","Other"];
-const DEFAULT_CAT_ICONS  = { Food:"🍽️",Transport:"🚌",Shopping:"🛒",Bills:"💡",Health:"💊",Entertainment:"🎬",Education:"📚",Travel:"✈️",Rent:"🏠",Salary:"💰",Other:"📌" };
-const DEFAULT_CAT_COLORS = { Food:"#f97316",Transport:"#0ea5e9",Shopping:"#a855f7",Bills:"#ef4444",Health:"#10b981",Entertainment:"#f59e0b",Education:"#3b82f6",Travel:"#06b6d4",Rent:"#8b5cf6",Salary:"#22c55e",Other:"#6b7280" };
+const DEFAULT_CATEGORIES = ["Food","Transport","Shopping","Bills","Health","Entertainment","Education","Travel","Rent","Salary","Balance_Correction","Other"];
+const DEFAULT_CAT_ICONS  = { Food:"🍽️",Transport:"🚌",Shopping:"🛒",Bills:"💡",Health:"💊",Entertainment:"🎬",Education:"📚",Travel:"✈️",Rent:"🏠",Salary:"💰",Balance_Correction:"🔄" ,Other:"📌" };
+const DEFAULT_CAT_COLORS = { Food:"#f97316",Transport:"#0ea5e9",Shopping:"#a855f7",Bills:"#ef4444",Health:"#10b981",Entertainment:"#f59e0b",Education:"#3b82f6",Travel:"#06b6d4",Rent:"#8b5cf6",Salary:"#22c55e",Balance_Correction:"#0ea5e9",Other:"#6b7280" };
 const EXTRA_COLORS = ["#ec4899","#14b8a6","#f43f5e","#84cc16","#fb923c","#a78bfa","#38bdf8","#fbbf24","#4ade80","#c084fc"];
-const EXTRA_ICONS  = ["🏋️","🐾","🎁","💻","🧴","🍕","☕","🎮","🧾","🚀","💈","🌿","🎵","🏖️","🛠️"];
+const EXTRA_ICONS  = ["🏋️","🐾","🎁","💻","🧴","🍕","☕","🎮","🧾","🚀","💈","🌿","🎵","🏖️","🛠️","🚌"];
 
 // ── Backend ────────────────────────────────────────────────────────────────────
 const API_BASE = "https://pdf-qna-backend.onrender.com" || "http://localhost:8000";
@@ -204,6 +204,7 @@ function buildExpenseSummary(expenses, accounts) {
   const catTotals = {};
   const catMonthly = {};
   for (const e of expenses) {
+    if (e.category === "Balance_Correction") continue;
     if (!catTotals[e.category]) catTotals[e.category] = { expense: 0, income: 0 };
     if (e.type === "expense") catTotals[e.category].expense += getEffectiveAmount(e); // ← was e.amount
     else catTotals[e.category].income += e.amount;
@@ -1009,6 +1010,33 @@ function AccountsTab({ budget, setBudget, showToast, onRecordAccountTransaction,
     });
     showToast(`↔ Transferred ${fmt(amt)}`, "success");
     setXFrom(""); setXTo(""); setXAmt(""); setXNote(""); setXErr(""); setXferModal(false);
+
+    // ADD THESE TWO LINES after showToast:
+    const fromAccObj = currentAccounts.find(a => a.id === xFrom);
+    const toAccObj   = currentAccounts.find(a => a.id === xTo);
+
+    onRecordAccountTransaction({
+      amount: amt,
+      category: "Balance_Correction",
+      description: `Transfer: ${fromAccObj?.name} → ${toAccObj?.name}`,
+      reason: xNote.trim() || "Account transfer",
+      type: "expense",
+      accountId: xFrom,
+      accountName: fromAccObj?.name,
+    });
+
+    onRecordAccountTransaction({
+      amount: amt,
+      category: "Balance_Correction",
+      description: `Transfer: ${fromAccObj?.name} → ${toAccObj?.name}`,
+      reason: xNote.trim() || "Account transfer",
+      type: "income",
+      accountId: xTo,
+      accountName: toAccObj?.name,
+    });
+
+    showToast(`↔ Transferred ${fmt(amt)}`, "success");
+    setXFrom(""); setXTo(""); setXAmt(""); setXNote(""); setXErr(""); setXferModal(false);
   };
 
   const handleDeleteAccount = (accId) => {
@@ -1742,6 +1770,7 @@ function CategoryBreakdown({ expenses, catIcons, catColors }) {
     const today    = isoDate(ist), thisWeek = weekKey(ist), thisMonth = monthKey(ist), thisYear = yearKey(ist);
     return expenses.filter(e => {
       if (e.type !== "expense") return false;
+      if (e.category === "Balance_Correction") return false; 
       if (period === "day")   return isoDate(e.timestamp)  === today;
       if (period === "week")  return weekKey(e.timestamp)  === thisWeek;
       if (period === "month") return monthKey(e.timestamp) === thisMonth;
@@ -2817,10 +2846,10 @@ const handleCloudSuccess = useCallback((result) => {
   const grouped = useMemo(()=>{ const g={day:{},week:{},month:{},year:{}}; for(const e of expenses){ const dk=isoDate(e.timestamp),wk=weekKey(e.timestamp),mk=monthKey(e.timestamp),yk=yearKey(e.timestamp); [["day",dk],["week",wk],["month",mk],["year",yk]].forEach(([gr,k])=>{ if(!g[gr][k]) g[gr][k]={income:0,expense:0,items:[]}; g[gr][k].items.push(e); g[gr][k][e.type]+=e.amount; }); } return g; },[expenses]);
 
   const totals = useMemo(()=>{
-    const inc=expenses.filter(e=>e.type==="income").reduce((s,e)=>s+e.amount,0);
-    const exp=expenses.filter(e=>e.type==="expense").reduce((s,e)=>s+e.amount,0);
-    return {income:inc,expense:exp,net:inc-exp};
-  },[expenses]);
+  const inc=expenses.filter(e=>e.type==="income"&&e.category!=="Balance_Correction").reduce((s,e)=>s+e.amount,0);
+  const exp=expenses.filter(e=>e.type==="expense"&&e.category!=="Balance_Correction").reduce((s,e)=>s+e.amount,0);
+  return {income:inc,expense:exp,net:inc-exp};
+},[expenses]);
 
   const totalLoansOwed = useMemo(()=>{ const map={}; for(const loan of loans){ for(const s of loan.splits){ if(!map[s.name]) map[s.name]=0; if(s.type==="owe") map[s.name]+=s.amount; if(s.type==="repaid") map[s.name]-=s.amount; } } return Object.values(map).reduce((s,v)=>s+Math.max(0,v),0); },[loans]);
 
@@ -2894,7 +2923,7 @@ const handleCloudSuccess = useCallback((result) => {
           </div>
           <div className="et-cat-section">
             <p className="et-section-label">Category Breakdown</p>
-            {categories.filter(c=>expenses.some(e=>e.category===c)).map(cat=>{ const total=expenses.filter(e=>e.category===cat).reduce((s,e)=>s+e.amount,0), pct=totals.expense>0?Math.round(total/totals.expense*100):0; return (
+            {categories.filter(c=>c!=="Balance_Correction"&&expenses.some(e=>e.category===c)).map(cat=>{ const total=expenses.filter(e=>e.category===cat).reduce((s,e)=>s+e.amount,0), pct=totals.expense>0?Math.round(total/totals.expense*100):0; return (
               <div key={cat} className="et-cat-row"><span className="et-cat-icon">{catIcons[cat]||"📌"}</span><span className="et-cat-name">{cat}</span><div className="et-cat-bar-wrap"><div className="et-cat-bar" style={{width:pct+"%",background:catColors[cat]||"#6b7280"}}/></div><span className="et-cat-amt">{fmt(total)}</span></div>
             ); })}
             {expenses.length===0&&<p className="et-empty-hint">No expenses yet</p>}

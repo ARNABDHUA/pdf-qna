@@ -8,38 +8,6 @@ const DEFAULT_CATEGORIES = [
   "Education","Travel","Rent","Salary","Other"
 ];
 
-// ── Category mapper ────────────────────────────────────────────────────────
-// const CAT_MAP = {
-//   breakfast:"Food", lunch:"Food", dinner:"Food", snack:"Food",
-//   beverage:"Food", "fast food":"Food", groceries:"Food", food:"Food",
-//   restaurant:"Food", cafe:"Food", coffee:"Food",
-//   transit:"Transport", transport:"Transport", rides:"Transport",
-//   cab:"Transport", auto:"Transport", fuel:"Transport", petrol:"Transport",
-//   shopping:"Shopping", clothing:"Shopping", fashion:"Shopping", accessories:"Shopping",
-//   bills:"Bills", utilities:"Bills", electricity:"Bills", water:"Bills",
-//   internet:"Bills", phone:"Bills", recharge:"Bills", subscription:"Bills",
-//   health:"Health", medical:"Health", pharmacy:"Health", fitness:"Health",
-//   gym:"Health", doctor:"Health",
-//   entertainment:"Entertainment", movies:"Entertainment", games:"Entertainment",
-//   sports:"Entertainment", music:"Entertainment",
-//   education:"Education", books:"Education", courses:"Education", stationery:"Education",
-//   travel:"Travel", hotel:"Travel", flight:"Travel", trip:"Travel",
-//   rent:"Rent", housing:"Rent", maintenance:"Rent",
-//   salary:"Salary", income:"Salary", "balance correction":"Other",
-// };
-
-function mapCategory(raw) {
-  if (!raw) return "Other";
-  const lower = raw.toLowerCase().trim();
-  if (CAT_MAP[lower]) return CAT_MAP[lower];
-  for (const [k, v] of Object.entries(CAT_MAP)) {
-    if (lower.includes(k) || k.includes(lower)) return v;
-  }
-  const direct = DEFAULT_CATEGORIES.find(c => c.toLowerCase() === lower);
-  if (direct) return direct;
-  return "Other";
-}
-
 // ── ID + helpers ───────────────────────────────────────────────────────────
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
 const fmt = n => "₹" + Number(n).toLocaleString("en-IN", { maximumFractionDigits: 2 });
@@ -66,10 +34,92 @@ function lsSave(items) {
     localStorage.setItem(LS_KEY, JSON.stringify(items));
     return true;
   } catch (e) {
-    // Storage quota exceeded or unavailable
     console.error("localStorage save failed:", e);
     return false;
   }
+}
+
+// ── Robust date parser ─────────────────────────────────────────────────────
+// Handles: DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, ISO strings, etc.
+function parseDate(raw) {
+  if (!raw) return NaN;
+  const s = String(raw).trim();
+
+  // DD/MM/YYYY or DD-MM-YYYY  (day first, common in Indian exports)
+  const ddmm = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (ddmm) {
+    const [, dd, mm, yyyy] = ddmm;
+    // If dd > 12, it must be day-first
+    // If mm > 12, it must be month-first (swap)
+    const d = parseInt(dd, 10);
+    const m = parseInt(mm, 10);
+    if (d > 12) {
+      // definitely DD/MM/YYYY
+      return new Date(`${yyyy}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`).getTime();
+    }
+    // Ambiguous — assume DD/MM/YYYY (Indian convention)
+    return new Date(`${yyyy}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`).getTime();
+  }
+
+  // YYYY/MM/DD
+  const yyyymm = s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})/);
+  if (yyyymm) {
+    return new Date(s).getTime();
+  }
+
+  // Fallback to JS Date
+  const ts = new Date(s).getTime();
+  return ts;
+}
+
+// ── Robust amount parser ───────────────────────────────────────────────────
+// Strips ₹, commas, spaces then parses float
+function parseAmount(raw) {
+  if (raw === undefined || raw === null || raw === "") return NaN;
+  return parseFloat(String(raw).replace(/[₹,\s]/g, ""));
+}
+
+// ── Find amount value from a row object ───────────────────────────────────
+function extractAmount(row) {
+  // Priority key list (exact matches first)
+  const amountKeys = [
+    "amount","Amount","AMOUNT",
+    "sum","Sum","value","Value",
+    "debit","credit","Debit","Credit",
+    "Amount (INR)","amount (inr)",
+    "Amount(INR)","amount(inr)",
+  ];
+  for (const k of amountKeys) {
+    if (row[k] !== undefined && row[k] !== "") {
+      const v = parseAmount(row[k]);
+      if (!isNaN(v) && v !== 0) return v;
+    }
+  }
+  // Fallback: find any key whose name contains "amount" (case-insensitive)
+  const fuzzyKey = Object.keys(row).find(k => k.toLowerCase().includes("amount"));
+  if (fuzzyKey) {
+    const v = parseAmount(row[fuzzyKey]);
+    if (!isNaN(v) && v !== 0) return v;
+  }
+  return NaN;
+}
+
+// ── Find date value from a row object ─────────────────────────────────────
+function extractDate(row) {
+  const dateKeys = ["date","Date","DATE","timestamp","Timestamp","datetime","DateTime"];
+  for (const k of dateKeys) {
+    if (row[k]) {
+      // If there's also a Time column, try combining
+      const timeVal = row["Time"] || row["time"] || "";
+      const combined = timeVal ? `${row[k]} ${timeVal}` : row[k];
+      const ts = parseDate(combined);
+      if (!isNaN(ts)) return ts;
+      // Try date alone
+      const ts2 = parseDate(row[k]);
+      if (!isNaN(ts2)) return ts2;
+    }
+  }
+  return Date.now();
 }
 
 // ── Parse Cashew CSV row ───────────────────────────────────────────────────
@@ -81,7 +131,7 @@ function parseCashewRow(row, accounts = []) {
   const amount = Math.abs(rawAmount);
 
   const dateStr = row["date"] || row["Date"] || "";
-  const ts = dateStr ? new Date(dateStr).getTime() : Date.now();
+  const ts = dateStr ? parseDate(dateStr) : Date.now();
   if (isNaN(ts)) return null;
 
   const catRaw = row["category name"] || row["category"] || row["Category"] || "";
@@ -104,49 +154,47 @@ function parseCashewRow(row, accounts = []) {
 
 // ── Parse generic CSV / Excel row ──────────────────────────────────────────
 function parseGenericRow(row, accounts = []) {
-  const amountKeys = ["amount","Amount","AMOUNT","sum","Sum","value","Value","debit","credit","Debit","Credit"];
-  let rawAmount = 0;
-  for (const k of amountKeys) {
-    if (row[k] !== undefined && row[k] !== "") {
-      rawAmount = parseFloat(String(row[k]).replace(/[₹,\s]/g, ""));
-      if (!isNaN(rawAmount)) break;
-    }
-  }
-  if (!rawAmount || isNaN(rawAmount)) return null;
+  // ── Amount ──────────────────────────────────────────────────────────────
+  const rawAmount = extractAmount(row);
+  if (isNaN(rawAmount) || rawAmount === 0) return null;
 
-  const typeKeys = ["type","Type","income","Income","transaction type","Transaction Type"];
-  let isIncome = rawAmount > 0;
+  // ── Type detection ───────────────────────────────────────────────────────
+  // First check explicit Type column (e.g. "Expense" / "Income")
+  const typeKeys = ["type","Type","TYPE","income","Income","transaction type","Transaction Type"];
+  let isIncome = rawAmount > 0; // default: positive = income
   for (const k of typeKeys) {
-    const v = String(row[k] || "").toLowerCase();
-    if (v === "income" || v === "credit" || v === "true") { isIncome = true; break; }
-    if (v === "expense" || v === "debit" || v === "false") { isIncome = false; break; }
+    const v = String(row[k] || "").toLowerCase().trim();
+    if (v === "income"  || v === "credit" || v === "true")  { isIncome = true;  break; }
+    if (v === "expense" || v === "debit"  || v === "false") { isIncome = false; break; }
   }
 
   const amount = Math.abs(rawAmount);
 
-  const dateKeys = ["date","Date","DATE","timestamp","Timestamp","datetime","DateTime"];
-  let ts = Date.now();
-  for (const k of dateKeys) {
-    if (row[k]) {
-      const d = new Date(row[k]);
-      if (!isNaN(d.getTime())) { ts = d.getTime(); break; }
-    }
-  }
+  // ── Date ─────────────────────────────────────────────────────────────────
+  const ts = extractDate(row);
 
+  // ── Category ─────────────────────────────────────────────────────────────
   const catKeys = ["category","Category","CATEGORY","category name","Category Name","cat"];
   let catRaw = "";
   for (const k of catKeys) { if (row[k]) { catRaw = row[k]; break; } }
   const category = catRaw.trim() || "Other";
 
-  const descKeys = ["description","Description","title","Title","name","Name","item","Item","memo","Memo","narration","Narration","particulars","Particulars"];
+  // ── Description ───────────────────────────────────────────────────────────
+  const descKeys = [
+    "description","Description","title","Title","name","Name",
+    "item","Item","memo","Memo","narration","Narration",
+    "particulars","Particulars",
+  ];
   let description = catRaw;
   for (const k of descKeys) { if (row[k]) { description = row[k]; break; } }
   description = (description || "Import").slice(0, 80);
 
+  // ── Note / Reason ─────────────────────────────────────────────────────────
   const noteKeys = ["note","Note","reason","Reason","remarks","Remarks","comment","Comment"];
   let reason = "";
   for (const k of noteKeys) { if (row[k]) { reason = row[k]; break; } }
 
+  // ── Account ───────────────────────────────────────────────────────────────
   const accKeys = ["account","Account","bank","Bank","wallet","Wallet","source","Source"];
   let accountName = "";
   for (const k of accKeys) { if (row[k]) { accountName = String(row[k]).trim(); break; } }
@@ -174,17 +222,20 @@ function detectFormat(headers) {
 
 // ── CSV parser ─────────────────────────────────────────────────────────────
 function parseCSVText(text) {
+  // Strip BOM if present
+  const cleaned = text.charCodeAt(0) === 0xFEFF ? text.slice(1) : text;
+
   const lines = [];
   let inQuote = false, cur = "", row = [];
-  for (let i = 0; i < text.length; i++) {
-    const ch = text[i];
+  for (let i = 0; i < cleaned.length; i++) {
+    const ch = cleaned[i];
     if (ch === '"') {
-      if (inQuote && text[i + 1] === '"') { cur += '"'; i++; }
+      if (inQuote && cleaned[i + 1] === '"') { cur += '"'; i++; }
       else inQuote = !inQuote;
     } else if (ch === ',' && !inQuote) {
       row.push(cur); cur = "";
     } else if ((ch === '\n' || ch === '\r') && !inQuote) {
-      if (ch === '\r' && text[i + 1] === '\n') i++;
+      if (ch === '\r' && cleaned[i + 1] === '\n') i++;
       row.push(cur); cur = "";
       lines.push(row); row = [];
     } else {
@@ -245,7 +296,7 @@ function parsePDFTextToRows(text) {
     const rawAmount = parseFloat(amountMatch[1].replace(/,/g, ""));
     if (!rawAmount || isNaN(rawAmount)) continue;
 
-    const ts = new Date(dateMatch[1]).getTime();
+    const ts = parseDate(dateMatch[1]);
     if (isNaN(ts)) continue;
 
     const desc = line
@@ -329,11 +380,10 @@ function loadSheetJS() {
 // ── Deduplicate against existing localStorage records ─────────────────────
 function deduplicateItems(incoming, existing) {
   const existingIds = new Set(existing.map(e => e.id));
-  // Also fingerprint by timestamp+amount+description to catch re-imports
   const fingerprints = new Set(
-  existing.map(e =>
-    `${e.timestamp}|${e.amount}|${e.description}|${e.category}|${e.type}|${(e.accountName || "").toLowerCase().trim()}`
-  )
+    existing.map(e =>
+      `${e.timestamp}|${e.amount}|${e.description}|${e.category}|${e.type}|${(e.accountName || "").toLowerCase().trim()}`
+    )
   );
   const fresh = [];
   let dupes = 0;
@@ -341,7 +391,7 @@ function deduplicateItems(incoming, existing) {
     const fp = `${item.timestamp}|${item.amount}|${item.description}|${item.category}|${item.type}|${(item.accountName || "").toLowerCase().trim()}`;
     if (existingIds.has(item.id) || fingerprints.has(fp)) { dupes++; continue; }
     fresh.push(item);
-    fingerprints.add(fp); // prevent dupes within the same import batch
+    fingerprints.add(fp);
   }
   return { fresh, dupes };
 }
@@ -497,7 +547,10 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
         const items = rows
           .map(r => format === "cashew" ? parseCashewRow(r, accounts) : parseGenericRow(r, accounts))
           .filter(Boolean);
-        if (!items.length) throw new Error("No valid expense rows could be parsed.");
+        if (!items.length) throw new Error(
+          "No valid expense rows could be parsed. " +
+          "Make sure the file has columns for date, amount, and description."
+        );
         setParsedItems(items);
         if (onNewCategories) {
           const unknown = [...new Set(items.map(i => i.category).filter(c => c && c !== "Other" && !categories.includes(c)))];
@@ -517,12 +570,15 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
         const items = rows
           .map(r => format === "cashew" ? parseCashewRow(r, accounts) : parseGenericRow(r, accounts))
           .filter(Boolean);
-        if (!items.length) throw new Error("No valid expense rows could be parsed.");
+        if (!items.length) throw new Error(
+          "No valid expense rows could be parsed. " +
+          "Make sure the file has columns for date, amount, and description."
+        );
         setParsedItems(items);
         if (onNewCategories) {
-        const unknown = [...new Set(items.map(i => i.category).filter(c => c && c !== "Other" && !categories.includes(c)))];
-        if (unknown.length) onNewCategories(unknown);
-      }
+          const unknown = [...new Set(items.map(i => i.category).filter(c => c && c !== "Other" && !categories.includes(c)))];
+          if (unknown.length) onNewCategories(unknown);
+        }
         setStage("preview");
 
       } else if (ext === "pdf") {
@@ -557,7 +613,7 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
       setParseError(err.message);
       setStage("upload");
     }
-  }, [accounts, showToast]);
+  }, [accounts, showToast, categories, onNewCategories]);
 
   // ── Drag & drop ────────────────────────────────────────────────────────
   const onDrop = useCallback(e => {
@@ -629,11 +685,9 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
 
     setImporting(true);
 
-    // ── Deduplicate against existing localStorage records ────────────
     const existing = lsLoad();
     const { fresh, dupes } = deduplicateItems(toImport, existing);
 
-    // ── Merge and persist ────────────────────────────────────────────
     const merged = [...existing, ...fresh];
     const saved  = lsSave(merged);
 
@@ -641,9 +695,6 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
       showToast?.("⚠️ Storage quota exceeded — some records may not have been saved.", "error");
     }
 
-    // ── Upsert accounts ONLY if there are fresh (non-duplicate) records ──
-    // Use fresh records to calculate balance delta so duplicates don't
-    // inflate account balances on re-import.
     const extracted = fresh.length > 0
       ? extractAccountsFromItems(fresh)
       : [];
@@ -651,7 +702,6 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
       ? upsertAccountsFromImport(extracted)
       : { created: 0, updated: 0 };
 
-    // ── Notify parent ────────────────────────────────────────────────
     onImported?.(fresh);
 
     setImportResult({
@@ -729,10 +779,10 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
           {/* Format cards */}
           <div style={styles.formatsGrid}>
             {[
-              { icon:"📊", label:"Cashew Export",  desc:"Auto-detected: account, amount, category name, date, income columns", color:"#22c55e" },
-              { icon:"🏦", label:"Bank Statement", desc:"Any CSV with date, amount, description/narration columns",             color:"#3b82f6" },
-              { icon:"📋", label:"Generic Excel",  desc:".xlsx/.xls with amount, date, category, description headers",         color:"#a855f7" },
-              { icon:"📄", label:"PDF Statement",  desc:"Text extracted locally in your browser — no server upload needed",    color:"#f59e0b" },
+              { icon:"📊", label:"Cashew Export",     desc:"Auto-detected: account, amount, category name, date, income columns", color:"#22c55e" },
+              { icon:"🏦", label:"Bank Statement",     desc:"Any CSV with date, amount, description/narration columns",             color:"#3b82f6" },
+              { icon:"📋", label:"Generic Excel",      desc:".xlsx/.xls with amount, date, category, description headers",         color:"#a855f7" },
+              { icon:"📄", label:"PDF Statement",      desc:"Text extracted locally in your browser — no server upload needed",    color:"#f59e0b" },
             ].map(f => (
               <div key={f.label} style={{ ...styles.formatCard, borderColor: f.color+"25" }}>
                 <span style={{ fontSize:20 }}>{f.icon}</span>
@@ -753,18 +803,6 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
               Names matched <strong style={{color:"rgba(255,255,255,0.65)"}}>case-insensitively</strong> — SBI = sbi = Sbi.
             </div>
           </div>
-
-          {/* Category mapping info */}
-          {/* <div style={styles.infoBox}>
-            <div style={{ fontSize:11, fontWeight:700, color:"#818cf8", marginBottom:5 }}>🗂 Auto Category Mapping</div>
-            <div style={{ fontSize:10, color:"rgba(255,255,255,0.45)", lineHeight:1.7 }}>
-              Breakfast/Lunch/Dinner → <strong style={{color:"#f97316"}}>Food</strong> ·
-              Transit/Cab → <strong style={{color:"#0ea5e9"}}>Transport</strong> ·
-              Fitness/Gym → <strong style={{color:"#10b981"}}>Health</strong> ·
-              Recharge → <strong style={{color:"#ef4444"}}>Bills</strong> ·
-              Salary → <strong style={{color:"#22c55e"}}>Salary</strong>
-            </div>
-          </div> */}
         </div>
       )}
 
@@ -783,10 +821,10 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
 
           {/* Stats */}
           <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-            <StatCard label="Records"       value={parsedItems.length}               color="#818cf8" />
-            <StatCard label="Total Expense" value={`₹${shortAmount(totalExp)}`}       color="#ef4444" />
-            <StatCard label="Total Income"  value={`₹${shortAmount(totalInc)}`}       color="#22c55e" />
-            <StatCard label="Net"           value={`₹${shortAmount(totalInc-totalExp)}`} color={totalInc-totalExp>=0?"#22c55e":"#ef4444"} />
+            <StatCard label="Records"       value={parsedItems.length}                    color="#818cf8" />
+            <StatCard label="Total Expense" value={`₹${shortAmount(totalExp)}`}            color="#ef4444" />
+            <StatCard label="Total Income"  value={`₹${shortAmount(totalInc)}`}            color="#22c55e" />
+            <StatCard label="Net"           value={`₹${shortAmount(totalInc-totalExp)}`}  color={totalInc-totalExp>=0?"#22c55e":"#ef4444"} />
           </div>
 
           {/* Account preview */}
@@ -857,11 +895,11 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
             {importResult.storageFailed ? "Partial Save" : "Import Successful!"}
           </div>
           <div style={{ display:"flex", gap:10, flexWrap:"wrap", justifyContent:"center" }}>
-            <StatCard label="Records Imported"    value={importResult.count}                                         color="#22c55e" />
-            {importResult.dupes > 0   && <StatCard label="Dupes Skipped"    value={importResult.dupes}              color="#f59e0b" />}
-            {importResult.accCreated > 0 && <StatCard label="Accounts Created" value={importResult.accCreated}      color="#818cf8" />}
-            {importResult.accUpdated > 0 && <StatCard label="Accounts Updated" value={importResult.accUpdated}      color="#3b82f6" />}
-            <StatCard label="Total in Storage"    value={importResult.totalInStorage}                                color="#6b7280" />
+            <StatCard label="Records Imported"    value={importResult.count}               color="#22c55e" />
+            {importResult.dupes > 0      && <StatCard label="Dupes Skipped"    value={importResult.dupes}      color="#f59e0b" />}
+            {importResult.accCreated > 0 && <StatCard label="Accounts Created" value={importResult.accCreated} color="#818cf8" />}
+            {importResult.accUpdated > 0 && <StatCard label="Accounts Updated" value={importResult.accUpdated} color="#3b82f6" />}
+            <StatCard label="Total in Storage"    value={importResult.totalInStorage}       color="#6b7280" />
           </div>
 
           {importResult.storageFailed && (
