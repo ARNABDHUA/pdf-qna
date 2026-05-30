@@ -539,7 +539,13 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
 
     try {
       if (ext === "csv") {
-        const text = await file.text();
+        // Read as ArrayBuffer first so we can safely strip BOM on mobile
+        const buffer = await file.arrayBuffer();
+        const bytes = new Uint8Array(buffer);
+        // Strip UTF-8 BOM (EF BB BF) if present
+        const hasBOM = bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF;
+        const sliced = hasBOM ? buffer.slice(3) : buffer;
+        const text = new TextDecoder("utf-8").decode(sliced);  // ← only this one
         const rows = parseCSVText(text);
         if (!rows.length) throw new Error("No data rows found in CSV.");
         const headers = Object.keys(rows[0]);
@@ -754,7 +760,7 @@ export default function ImportHistory({ onImported, showToast, budget, setBudget
             onDrop={onDrop}
             onClick={() => fileInputRef.current?.click()}
           >
-            <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,.pdf" style={{ display:"none" }} onChange={onFileChange} />
+            <input ref={fileInputRef} type="file" accept=".csv,.xlsx,.xls,.pdf,text/csv,text/plain,application/vnd.ms-excel,application/octet-stream" style={{ display:"none" }} onChange={onFileChange} />
             {pdfProgress ? (
               <>
                 <div style={{ fontSize:32, marginBottom:8 }}>⏳</div>
