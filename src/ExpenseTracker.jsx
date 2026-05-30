@@ -191,11 +191,47 @@ function getEffectiveAmount(e) {
   return parseFloat(match[1].replace(/,/g, ""));
 }
 
+// ── Net Balance Summary ────────────────────────────────────────────────────────
+
+function buildNetBalanceSummary(expenses, accounts) {
+  const filtered = expenses.filter(e => e.category !== "Balance_Correction");
+
+  const totalInc = filtered
+    .filter(e => e.type === "income")
+    .reduce((s, e) => s + e.amount, 0);
+
+  const totalExp = filtered
+    .filter(e => e.type === "expense")
+    .reduce((s, e) => s + e.amount, 0);
+
+  const netBalance = totalInc - totalExp;
+
+  let summary = `NET BALANCE SUMMARY (use this when user asks for net balance / total balance / balance):\n`;
+  summary += `  Total Income : ₹${totalInc.toLocaleString("en-IN", { maximumFractionDigits: 2 })}\n`;
+  summary += `  Total Expense: ₹${totalExp.toLocaleString("en-IN", { maximumFractionDigits: 2 })}\n`;
+  summary += `  Net Balance  : ₹${netBalance.toLocaleString("en-IN", { maximumFractionDigits: 2 })} (${netBalance >= 0 ? "surplus" : "deficit"})\n`;
+
+  if (accounts && accounts.length > 0) {
+    const totalAccountBalance = accounts.reduce((s, a) => s + Number(a.currentBalance), 0);
+    summary += `\n  ACCOUNT-WISE BALANCES:\n`;
+    for (const acc of accounts) {
+      summary += `    - "${acc.name}" (${acc.type}): ₹${Number(acc.currentBalance).toLocaleString("en-IN", { maximumFractionDigits: 2 })}\n`;
+    }
+    summary += `  Total Across All Accounts: ₹${totalAccountBalance.toLocaleString("en-IN", { maximumFractionDigits: 2 })}\n`;
+  }
+
+  return summary;
+}
+
+// ── Expense Summary ────────────────────────────────────────────────────────────
+
 function buildExpenseSummary(expenses, accounts) {
   if (!expenses || expenses.length === 0) return "No expenses recorded yet.";
 
+  const filtered = expenses.filter(e => e.category !== "Balance_Correction");
+
   const byMonth = {};
-  for (const e of expenses) {
+  for (const e of filtered) {
     const mk = monthKey(e.timestamp);
     if (!byMonth[mk]) byMonth[mk] = [];
     byMonth[mk].push(e);
@@ -203,29 +239,33 @@ function buildExpenseSummary(expenses, accounts) {
 
   const catTotals = {};
   const catMonthly = {};
-  for (const e of expenses) {
-    if (e.category === "Balance_Correction") continue;
+  for (const e of filtered) {
     if (!catTotals[e.category]) catTotals[e.category] = { expense: 0, income: 0 };
-    if (e.type === "expense") catTotals[e.category].expense += getEffectiveAmount(e); // ← was e.amount
+    if (e.type === "expense") catTotals[e.category].expense += getEffectiveAmount(e);
     else catTotals[e.category].income += e.amount;
 
     const mk = monthKey(e.timestamp);
     if (!catMonthly[mk]) catMonthly[mk] = {};
     if (!catMonthly[mk][e.category]) catMonthly[mk][e.category] = { expense: 0, income: 0 };
-    if (e.type === "expense") catMonthly[mk][e.category].expense += getEffectiveAmount(e); // ← was e.amount
+    if (e.type === "expense") catMonthly[mk][e.category].expense += getEffectiveAmount(e);
     else catMonthly[mk][e.category].income += e.amount;
   }
 
-  const totalExp = expenses.filter(e => e.type === "expense").reduce((s, e) => s + getEffectiveAmount(e), 0); // ← was e.amount
-  const totalInc = expenses.filter(e => e.type === "income").reduce((s, e) => s + e.amount, 0);
+  const totalExp = filtered
+    .filter(e => e.type === "expense")
+    .reduce((s, e) => s + getEffectiveAmount(e), 0);
+
+  const totalInc = filtered
+    .filter(e => e.type === "income")
+    .reduce((s, e) => s + e.amount, 0);
 
   let summary = `EXPENSE HISTORY SUMMARY (for answering user questions):\n`;
-  summary += `Total Records: ${expenses.length} | Total Spent: ₹${totalExp.toFixed(2)} | Total Income: ₹${totalInc.toFixed(2)} | Net: ₹${(totalInc - totalExp).toFixed(2)}\n\n`;
+  summary += `Total Records: ${filtered.length} | Total Spent: ₹${totalExp.toFixed(2)} | Total Income: ₹${totalInc.toFixed(2)} | Net: ₹${(totalInc - totalExp).toFixed(2)}\n\n`;
 
   if (accounts && accounts.length > 0) {
     summary += `ACCOUNT BALANCES (CURRENT):\n`;
     for (const acc of accounts) {
-      const accTxns = expenses
+      const accTxns = filtered
         .filter(e => e.accountId === acc.id)
         .sort((a, b) => b.timestamp - a.timestamp);
       const last5 = accTxns.slice(0, 5);
@@ -233,7 +273,6 @@ function buildExpenseSummary(expenses, accounts) {
       if (last5.length > 0) {
         summary += `    Last ${last5.length} transactions:\n`;
         for (const t of last5) {
-          // Show effective amount in transaction log too so AI sees the real share
           const effAmt = t.type === "expense" ? getEffectiveAmount(t) : t.amount;
           summary += `      [${dateIN(t.timestamp)}] ${t.type === "expense" ? "-" : "+"}₹${effAmt} | ${t.category} | ${t.description || ""}${t.reason ? ` | note:${t.reason}` : ""}\n`;
         }
@@ -248,8 +287,12 @@ function buildExpenseSummary(expenses, accounts) {
   const sortedMonths = Object.keys(byMonth).sort((a, b) => b.localeCompare(a));
   for (const mk of sortedMonths.slice(0, 12)) {
     const items = byMonth[mk];
-    const mExp = items.filter(e => e.type === "expense").reduce((s, e) => s + getEffectiveAmount(e), 0); // ← was e.amount
-    const mInc = items.filter(e => e.type === "income").reduce((s, e) => s + e.amount, 0);
+    const mExp = items
+      .filter(e => e.type === "expense")
+      .reduce((s, e) => s + getEffectiveAmount(e), 0);
+    const mInc = items
+      .filter(e => e.type === "income")
+      .reduce((s, e) => s + e.amount, 0);
     const [yr, mo] = mk.split("-").map(Number);
     const mName = new Date(yr, mo - 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" });
     summary += `${mName}: Spent=₹${mExp.toFixed(2)}, Income=₹${mInc.toFixed(2)}, Txns=${items.length}\n`;
@@ -266,7 +309,9 @@ function buildExpenseSummary(expenses, accounts) {
   }
 
   summary += `\nRECENT TRANSACTIONS (last 20):\n`;
-  const recent = [...expenses].sort((a, b) => b.timestamp - a.timestamp).slice(0, 20);
+  const recent = [...filtered]
+    .sort((a, b) => b.timestamp - a.timestamp)
+    .slice(0, 20);
   for (const e of recent) {
     const effAmt = e.type === "expense" ? getEffectiveAmount(e) : e.amount;
     summary += `  [${dateIN(e.timestamp)}] ${e.type === "expense" ? "-" : "+"}₹${effAmt} | ${e.category} | ${e.description || ""}${e.accountName ? ` | account:${e.accountName}` : ""}${e.reason ? ` | note:${e.reason}` : ""}\n`;
@@ -277,16 +322,15 @@ function buildExpenseSummary(expenses, accounts) {
 
 // ── System prompt ──────────────────────────────────────────────────────────────
 
-
-
 function buildSystemPrompt(categories, accounts, defaultAccountId, expenses) {
   const ist = getISTContext();
   const defaultAcc = accounts.find(a => a.id === defaultAccountId);
-  const accountList = accounts.map(a => 
+  const accountList = accounts.map(a =>
     `  - name:"${a.name}", id:"${a.id}", type:"${a.type}", currentBalance:${a.currentBalance}${a.id === defaultAccountId ? ' [CURRENT DEFAULT]' : ''}`
   ).join("\n") || "  (none)";
   const hasAccounts = accounts.length > 0;
   const expenseSummary = buildExpenseSummary(expenses, accounts);
+  const netBalanceSummary = buildNetBalanceSummary(expenses, accounts);  // ← new
 
   return `You are a STRICT expense, income, and loan tracking assistant for an Indian user.
 
@@ -297,7 +341,8 @@ STRICT RULES:
    - Current balance of that account
    - Last 5 transactions linked to it (from the data provided)
    - Format it nicely with emojis
-4. Anything unrelated → respond ONLY: "I'm your expense tracker assistant. I can only help with expenses, income, loans, and financial topics. 💸"
+4. When user asks for "net balance", "total balance", "balance", "what is my balance", "how much do I have" → use ONLY the NET BALANCE SUMMARY section below for the answer.
+5. Anything unrelated → respond ONLY: "I'm your expense tracker assistant. I can only help with expenses, income, loans, and financial topics. 💸"
 
 CURRENT IST CONTEXT:
 - nowMs: ${ist.nowMs} | nowIST: ${ist.nowIST}
@@ -310,6 +355,8 @@ DATE/TIME RULES:
 - "yesterday" → use yesterdayNoonMs (${ist.yesterdayNoonMs})
 - "N days ago" → todayNoon - (N * 86400000)
 - NEVER guess or fabricate timestamps. If no date/time mentioned, use nowMs exactly.
+
+${netBalanceSummary}
 
 ${expenseSummary}
 
