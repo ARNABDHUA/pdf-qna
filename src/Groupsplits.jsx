@@ -667,7 +667,7 @@ function DetailedTransactionView({ expenses, username, groupName, periodLabel, o
                                 </span>
                                 {canSettle && (
                                   <button className="gs-dtv-settle-btn"
-                                    onClick={(ev)=>{ev.stopPropagation();onSettle(e.expense_id,s.username,s.share,e.description);}}>
+                                    onClick={(ev)=>{ev.stopPropagation();onSettle(e.expense_id,s.username,s.share);}}>
                                     Mark Paid
                                   </button>
                                 )}
@@ -736,7 +736,6 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
   const [settleAllModal,  setSettleAllModal]  = useState(null);
   const [leaveModal,      setLeaveModal]      = useState(false);
   const [payAndSaveModal, setPayAndSaveModal] = useState(null);
-  const [settleShareModal,  setSettleShareModal]  = useState(null); // {expenseId, forUsername, amount, expenseName}
 
   const wsRef              = useRef({});
   const wsRetry            = useRef({});
@@ -946,36 +945,13 @@ export default function GroupSplits({ credentials, onRecordTransaction, budget, 
     } finally { setPushLoading(false); }
   };
 
-  // The actual API call — called after confirmation
-const doSettleShare = useCallback(async (expenseId, forUsername, amount, expenseName) => {
+  const handleSettleShare = useCallback(async (expenseId, forUsername, amount) => {
     try {
-      const settledAt = Date.now();
       await apiCall("/settle", { username, password, group_id:activeGroup.group_id, expense_id:expenseId, settled_for_username:forUsername, amount });
-      setGroupExpenses(prev=>prev.map(e=>{
-        if(e.expense_id!==expenseId) return e;
-        return{...e, splits:e.splits.map(s=>s.username===forUsername ? {...s, paid:true, settled_at:settledAt} : s)};
-      }));
-      // Credit to default account if payer is settling (they're receiving money)
-      if (onRecordTransaction) {
-        onRecordTransaction({
-          amount,
-          category: "Other",
-          description: `${forUsername} paid their share — ${expenseName||"group expense"}`,
-          reason: `Group: ${activeGroup.name} · Settled on ${new Date(settledAt).toLocaleDateString("en-IN", {day:"2-digit",month:"2-digit",year:"numeric",timeZone:"Asia/Kolkata"})}`,
-          type: "income",
-          accountId: budget?.defaultAccountId || null,
-          accountName: budget?.accounts?.find(a=>a.id===budget?.defaultAccountId)?.name || null,
-          timestamp: settledAt,
-        });
-      }
-      localToast(`✅ Settled ${fmt(amount)} for ${forUsername}${budget?.defaultAccountId ? " · credited to account" : ""}`, "success");
+      setGroupExpenses(prev=>prev.map(e=>{if(e.expense_id!==expenseId)return e;return{...e,splits:e.splits.map(s=>s.username===forUsername?{...s,paid:true}:s)};}));
+      localToast(`✅ Settled ${fmt(amount)} for ${forUsername}`, "success");
     } catch(err) { localToast("⚠️ "+err.message,"error"); }
-  }, [activeGroup, username, password, localToast, onRecordTransaction, budget]);
-
-  // Opens confirmation modal instead of settling directly
-  const handleSettleShare = useCallback((expenseId, forUsername, amount, expenseName) => {
-    setSettleShareModal({ expenseId, forUsername, amount, expenseName: expenseName || "expense" });
-  }, []);
+  }, [activeGroup, username, password, localToast]);
 
   const handleDeleteExpense = useCallback(async (expenseId) => {
     try {
@@ -1204,7 +1180,7 @@ const handleSettleAll = useCallback(async (memberName, totalAmount) => {
                       <GroupExpenseCard
                         key={e.expense_id} expense={e} username={username}
                         isAdmin={activeGroup.admin===username}
-                        onSettle={(forUser,amount,expName)=>handleSettleShare(e.expense_id,forUser,amount,expName||e.description)}
+                        onSettle={(forUser,amount)=>handleSettleShare(e.expense_id,forUser,amount)}
                         onDelete={()=>handleDeleteExpense(e.expense_id)}
                       />
                     ))}
@@ -1276,43 +1252,6 @@ const handleSettleAll = useCallback(async (memberName, totalAmount) => {
                       onClick={() => handleSettleAll(settleAllModal.name, settleAllModal.amount)}
                     >
                       ✓ Settle All {fmt(settleAllModal.amount)}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {settleShareModal && (
-              <div className="et-modal-overlay" onClick={()=>setSettleShareModal(null)}>
-                <div className="et-modal" onClick={e=>e.stopPropagation()}>
-                  <div className="et-modal-icon">💸</div>
-                  <h3>Mark as Paid?</h3>
-                  <p>
-                    Confirm that <strong style={{color:"#f59e0b"}}>{settleShareModal.forUsername}</strong> has paid their share of{" "}
-                    <strong style={{color:"#22c55e"}}>{fmt(settleShareModal.amount)}</strong> for{" "}
-                    <strong style={{color:"#e4e4f0"}}>"{settleShareModal.expenseName}"</strong>.
-                    {budget?.defaultAccountId && (
-                      <><br/><br/>
-                      <span style={{color:"rgba(255,255,255,0.45)"}}>
-                        {fmt(settleShareModal.amount)} will be credited to{" "}
-                        <strong style={{color:"#3b82f6"}}>{budget.accounts?.find(a=>a.id===budget.defaultAccountId)?.name || "your default account"}</strong> and logged in Records with today's date.
-                      </span></>
-                    )}
-                    {!budget?.defaultAccountId && (
-                      <><br/><br/><span style={{color:"rgba(255,255,255,0.3)",fontSize:11}}>💡 Add a default account in 💳 Accounts to auto-credit settlements.</span></>
-                    )}
-                  </p>
-                  <div className="et-modal-actions">
-                    <button className="et-modal-cancel" onClick={()=>setSettleShareModal(null)}>Cancel</button>
-                    <button
-                      className="et-modal-confirm"
-                      style={{background:"linear-gradient(135deg,#22c55e,#16a34a)"}}
-                      onClick={()=>{
-                        doSettleShare(settleShareModal.expenseId, settleShareModal.forUsername, settleShareModal.amount, settleShareModal.expenseName);
-                        setSettleShareModal(null);
-                      }}
-                    >
-                      ✓ Confirm Settled {fmt(settleShareModal.amount)}
                     </button>
                   </div>
                 </div>
@@ -1506,7 +1445,7 @@ function GroupExpenseCard({ expense, username, isAdmin, onSettle, onDelete }) {
                 <span className="gs-split-avatar" style={{background:isMe?"#f59e0b22":"#6366f122",color:isMe?"#f59e0b":"#818cf8"}}>{s.username[0].toUpperCase()}</span>
                 <span className="gs-split-name">{s.username}{isMe?" (you)":""}</span>
                 <span className="gs-split-share" style={{color:s.paid?"#22c55e":"rgba(255,255,255,0.6)"}}>{fmt(s.share)} {s.paid?"✓":""}</span>
-                {canSettle&&<button className="gs-settle-btn" onClick={()=>onSettle(s.username,s.share,expense.description)}>Mark Paid</button>}
+                {canSettle&&<button className="gs-settle-btn" onClick={()=>onSettle(s.username,s.share)}>Mark Paid</button>}
               </div>
             );
           })}
