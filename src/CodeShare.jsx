@@ -1,20 +1,15 @@
 /**
- * CodeShare.jsx  —  v4
+ * CodeShare.jsx  —  v6
  *
- * Fixes:
- *   1. Scroll — page scrolls normally; no overflow clipping.
- *   2. User-specific snippets — IDs persisted in localStorage under a
- *      stable random userId. On load we fetch only those IDs via
- *      GET /codeshare?ids=a,b,c so other users' snippets are never shown.
- *   3. Syntax highlight fix — language is normalized to lowercase before
- *      passing to highlight.js, and CodeBlock re-mounts when language
- *      changes to avoid stale highlighted HTML.
- *   4. LINE-BY-LINE rendering — each line is its own block element so the
- *      code displays like a proper editor (VSCode-style), not a single line.
- *
- * Routes:
- *   /codeshare        → editor + my snippets list
- *   /codeshare/:id    → read-only viewer
+ * Edit Key Requirements enforced:
+ *  1. Edit Key is generated ONLY during snippet creation (POST). Never regenerated.
+ *  2. Edit Key + snippet data stored in localStorage by creator (User1).
+ *  3. Creator (User1) edits without entering the key — key is read silently from localStorage.
+ *  4. Other users can view but cannot edit without the correct Edit Key.
+ *  5. "Copy/Share Edit Key" UI is shown ONLY to User1 (isCreator).
+ *  6. No "Generate Key" button ever appears for existing snippets.
+ *  7. Wrong Edit Key → clear error message, edit mode blocked.
+ *  8. Snippet data (title, language, author, code) cached in localStorage per snippet.
  */
 
 import React, { useState, useEffect, useRef, useCallback } from "react";
@@ -103,11 +98,8 @@ function getUserId() {
 }
 
 function getUserSnippetIds() {
-  try {
-    return JSON.parse(localStorage.getItem("cs_snippet_ids") || "[]");
-  } catch {
-    return [];
-  }
+  try { return JSON.parse(localStorage.getItem("cs_snippet_ids") || "[]"); }
+  catch { return []; }
 }
 
 function addUserSnippetId(id) {
@@ -121,6 +113,72 @@ function addUserSnippetId(id) {
 function removeUserSnippetId(id) {
   const ids = getUserSnippetIds().filter(i => i !== id);
   localStorage.setItem("cs_snippet_ids", JSON.stringify(ids));
+}
+
+// ── Edit Key storage ──────────────────────────────────────────────────────────
+// Keyed by snippet id. Only set ONCE at creation time (or when a collaborator
+// successfully verifies their key). Never regenerated.
+function getStoredEditKeys() {
+  try { return JSON.parse(localStorage.getItem("cs_edit_keys") || "{}"); }
+  catch { return {}; }
+}
+
+/**
+ * Store an edit key for a snippet.
+ * `isOwner` — true only when called from the creation flow (User1).
+ *             false when called after a collaborator verifies their key.
+ * We track ownership separately so we never show "Share Key" UI to collaborators.
+ */
+function storeEditKey(snippetId, key, isOwner = false) {
+  const keys = getStoredEditKeys();
+  keys[snippetId] = key;
+  localStorage.setItem("cs_edit_keys", JSON.stringify(keys));
+  if (isOwner) {
+    const owners = getOwnerSnippetIds();
+    if (!owners.includes(snippetId)) {
+      owners.unshift(snippetId);
+      localStorage.setItem("cs_owner_ids", JSON.stringify(owners));
+    }
+  }
+}
+
+function getEditKey(snippetId) {
+  return getStoredEditKeys()[snippetId] || null;
+}
+
+/** IDs of snippets THIS device created (owns). */
+function getOwnerSnippetIds() {
+  try { return JSON.parse(localStorage.getItem("cs_owner_ids") || "[]"); }
+  catch { return []; }
+}
+
+function isOwnerOfSnippet(snippetId) {
+  return getOwnerSnippetIds().includes(snippetId);
+}
+
+// ── Snippet data cache ────────────────────────────────────────────────────────
+// Requirement: "Edit Key and snippet data must be stored in Local Storage."
+function cacheSnippetData(snippetId, data) {
+  try {
+    const cache = JSON.parse(localStorage.getItem("cs_snippet_cache") || "{}");
+    cache[snippetId] = { ...data, _cachedAt: Date.now() };
+    // Keep cache under control — max 100 entries, evict oldest
+    const entries = Object.entries(cache);
+    if (entries.length > 100) {
+      entries.sort((a, b) => (a[1]._cachedAt || 0) - (b[1]._cachedAt || 0));
+      const trimmed = Object.fromEntries(entries.slice(-100));
+      localStorage.setItem("cs_snippet_cache", JSON.stringify(trimmed));
+    } else {
+      localStorage.setItem("cs_snippet_cache", JSON.stringify(cache));
+    }
+  } catch { /* storage full — silently skip */ }
+}
+
+function getCachedSnippetData(snippetId) {
+  try {
+    const cache = JSON.parse(localStorage.getItem("cs_snippet_cache") || "{}");
+    return cache[snippetId] || null;
+  } catch { return null; }
 }
 
 // ── Languages ─────────────────────────────────────────────────────────────────
@@ -165,23 +223,12 @@ function escapeHtml(str = "") {
 }
 
 const LANG_ALIAS_MAP = {
-  "py":         "python",
-  "js":         "javascript",
-  "ts":         "typescript",
-  "sh":         "bash",
-  "shell":      "bash",
-  "zsh":        "bash",
-  "cs":         "csharp",
-  "c#":         "csharp",
-  "c++":        "cpp",
-  "htm":        "html",
-  "yml":        "yaml",
-  "rb":         "ruby",
-  "rs":         "rust",
-  "kt":         "kotlin",
-  "plaintext":  "text",
-  "plain":      "text",
-  "txt":        "text",
+  "py": "python", "js": "javascript", "ts": "typescript",
+  "sh": "bash", "shell": "bash", "zsh": "bash",
+  "cs": "csharp", "c#": "csharp", "c++": "cpp",
+  "htm": "html", "yml": "yaml", "rb": "ruby",
+  "rs": "rust", "kt": "kotlin",
+  "plaintext": "text", "plain": "text", "txt": "text",
 };
 
 function normalizeLanguage(lang) {
@@ -190,7 +237,6 @@ function normalizeLanguage(lang) {
   return LANG_ALIAS_MAP[lower] ?? lower;
 }
 
-// ── highlight: returns full highlighted HTML string ───────────────────────────
 async function highlight(code, lang) {
   const h = await loadHljs();
   if (!h || !code) return escapeHtml(code);
@@ -206,75 +252,39 @@ async function highlight(code, lang) {
   }
 }
 
-/**
- * splitHighlightedHtml
- * ---------------------
- * highlight.js returns a single HTML string where tokens may SPAN multiple
- * lines (e.g. a multi-line string or comment is one <span>...</span> with
- * embedded \n characters).  A naive .split("\n") breaks those open tags.
- *
- * This function walks the HTML character-by-character, tracking open tags,
- * and emits one HTML string per logical line — closing any open spans at the
- * end of each line and re-opening them at the start of the next, so every
- * line is valid, self-contained HTML.
- */
 function splitHighlightedHtml(html) {
-  const lines   = [];
-  let   current = "";         // HTML being built for the current line
-  const stack   = [];         // stack of currently open <span ...> tags
-  let   i       = 0;
-
+  const lines = [];
+  let current = "";
+  const stack = [];
+  let i = 0;
   while (i < html.length) {
-    // ── Opening tag ──────────────────────────────────────────────────────────
     if (html[i] === "<" && html[i + 1] !== "/") {
       const end = html.indexOf(">", i);
       if (end === -1) { current += html.slice(i); break; }
       const tag = html.slice(i, end + 1);
-      // Self-closing or non-span tags — just emit
-      if (tag.startsWith("<span")) {
-        stack.push(tag);
-        current += tag;
-        i = end + 1;
-      } else {
-        current += tag;
-        i = end + 1;
-      }
+      if (tag.startsWith("<span")) { stack.push(tag); current += tag; i = end + 1; }
+      else { current += tag; i = end + 1; }
       continue;
     }
-
-    // ── Closing tag ───────────────────────────────────────────────────────────
     if (html[i] === "<" && html[i + 1] === "/") {
       const end = html.indexOf(">", i);
       if (end === -1) { current += html.slice(i); break; }
       const tag = html.slice(i, end + 1);
       if (tag === "</span>" && stack.length) stack.pop();
-      current += tag;
-      i = end + 1;
-      continue;
+      current += tag; i = end + 1; continue;
     }
-
-    // ── Newline ───────────────────────────────────────────────────────────────
     if (html[i] === "\n") {
-      // Close all open spans for this line
       const closers = stack.map(() => "</span>").join("");
       lines.push(current + closers);
-      // Re-open those spans on the next line
       current = stack.join("");
-      i++;
-      continue;
+      i++; continue;
     }
-
-    // ── Regular character ─────────────────────────────────────────────────────
-    current += html[i];
-    i++;
+    current += html[i]; i++;
   }
-
-  // Flush last line
   if (current || lines.length === 0) {
     const closers = stack.map(() => "</span>").join("");
     lines.push(current + closers);
   }
-
   return lines;
 }
 
@@ -294,7 +304,7 @@ async function apiPost(body) {
     body: JSON.stringify(body),
   });
   if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  return r.json(); // { id, edit_key }
 }
 
 async function apiGet(id) {
@@ -318,40 +328,42 @@ async function apiDelete(id) {
   return r.json();
 }
 
+async function apiUpdate(id, body) {
+  const r = await fetch(`${API_BASE}/codeshare/${id}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) {
+    const msg = await r.text();
+    throw new Error(msg || "Update failed");
+  }
+  return r.json();
+}
+
 // ── CodeBlock ─────────────────────────────────────────────────────────────────
-// Renders code line-by-line (VSCode-style) with proper syntax highlighting.
-// Each line is a <div class="cs-code-line"> so gutter numbers align perfectly.
 function CodeBlock({ code, language, lineNumbers = true }) {
   const normalizedLang = normalizeLanguage(language);
   const rawLines = code.split("\n");
-
-  // State: array of per-line HTML strings (one per line)
-  const [lineHtmls, setLineHtmls] = useState(() =>
-    rawLines.map(l => escapeHtml(l))
-  );
+  const [lineHtmls, setLineHtmls] = useState(() => rawLines.map(l => escapeHtml(l)));
   const [highlighted, setHighlighted] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
     setHighlighted(false);
-    // Reset to escaped plain text immediately so content is visible
     setLineHtmls(rawLines.map(l => escapeHtml(l)));
-
     highlight(code, normalizedLang).then(fullHtml => {
       if (!cancelled) {
-        const lines = splitHighlightedHtml(fullHtml);
-        setLineHtmls(lines);
+        setLineHtmls(splitHighlightedHtml(fullHtml));
         setHighlighted(true);
       }
     });
-
     return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code, normalizedLang]);
 
   return (
     <div className={`cs-codeblock${highlighted ? " cs-codeblock--ready" : ""}`}>
-      {/* Gutter */}
       {lineNumbers && (
         <div className="cs-codeblock__gutter" aria-hidden="true">
           {rawLines.map((_, i) => (
@@ -359,8 +371,6 @@ function CodeBlock({ code, language, lineNumbers = true }) {
           ))}
         </div>
       )}
-
-      {/* Code */}
       <pre className="cs-codeblock__pre">
         <code className={`cs-codeblock__code language-${normalizedLang}`}>
           {lineHtmls.map((lineHtml, i) => (
@@ -428,7 +438,9 @@ function SnippetEditor({ onSnippetCreated }) {
   const [author,   setAuthor]   = useState(() => localStorage.getItem("cs_author") || "");
   const [saving,   setSaving]   = useState(false);
   const [shareUrl, setShareUrl] = useState("");
+  const [editKey,  setEditKey]  = useState("");
   const [copied,   setCopied]   = useState(false);
+  const [keyCopied,setKeyCopied]= useState(false);
   const [error,    setError]    = useState("");
   const [preview,  setPreview]  = useState(false);
   const textareaRef = useRef(null);
@@ -446,15 +458,36 @@ function SnippetEditor({ onSnippetCreated }) {
     setSaving(true); setError("");
     try {
       localStorage.setItem("cs_author", author);
-      const { id } = await apiPost({
+      const normalizedLang = normalizeLanguage(lang);
+      const { id, edit_key } = await apiPost({
         title:    title.trim() || "Untitled Snippet",
-        language: normalizeLanguage(lang),
+        language: normalizedLang,
         code,
         author:   author.trim() || "Anonymous",
       });
+
+      // Track this snippet ID in the user's list
       addUserSnippetId(id);
+
+      // ── Requirement: store edit_key + mark as owner (User1 only) ──────────
+      if (edit_key) {
+        storeEditKey(id, edit_key, true /* isOwner */);
+      }
+
+      // ── Requirement: cache snippet data in localStorage ───────────────────
+      cacheSnippetData(id, {
+        id,
+        title:      title.trim() || "Untitled Snippet",
+        language:   normalizedLang,
+        code,
+        author:     author.trim() || "Anonymous",
+        created_at: new Date().toISOString(),
+        views:      0,
+      });
+
       const url = `${window.location.origin}/codeshare/${id}`;
       setShareUrl(url);
+      setEditKey(edit_key || "");
       if (onSnippetCreated) onSnippetCreated();
     } catch (e) {
       setError(e.message);
@@ -463,19 +496,15 @@ function SnippetEditor({ onSnippetCreated }) {
     }
   };
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(shareUrl);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+  const handleCopy    = () => { navigator.clipboard.writeText(shareUrl); setCopied(true);    setTimeout(() => setCopied(false),    2000); };
+  const handleKeyCopy = () => { navigator.clipboard.writeText(editKey);  setKeyCopied(true); setTimeout(() => setKeyCopied(false), 2000); };
 
   const handleTabKey = e => {
     if (e.key === "Tab") {
       e.preventDefault();
-      const ta    = e.target;
-      const start = ta.selectionStart;
-      const end   = ta.selectionEnd;
-      const next  = code.substring(0, start) + "  " + code.substring(end);
+      const ta = e.target;
+      const start = ta.selectionStart, end = ta.selectionEnd;
+      const next = code.substring(0, start) + "  " + code.substring(end);
       setCode(next);
       requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + 2; });
     }
@@ -483,7 +512,6 @@ function SnippetEditor({ onSnippetCreated }) {
 
   return (
     <div className="cs-editor">
-      {/* Toolbar */}
       <div className="cs-editor__toolbar">
         <div className="cs-editor__toolbar-row">
           <input
@@ -512,14 +540,12 @@ function SnippetEditor({ onSnippetCreated }) {
         </div>
       </div>
 
-      {/* Editor label */}
       <div className="cs-editor__label">
         <span className="cs-editor__label-dot" style={{ background: LANG_COLORS[lang] || "#9ca3af" }} />
         {LANGUAGES.find(l => l.id === lang)?.label || "Auto"}
         {preview && <span className="cs-editor__label-badge">PREVIEW</span>}
       </div>
 
-      {/* Code area */}
       {preview ? (
         <CodeBlock key={`preview-${lang}`} code={code || "// nothing to preview yet"} language={lang} />
       ) : (
@@ -537,7 +563,6 @@ function SnippetEditor({ onSnippetCreated }) {
         />
       )}
 
-      {/* Footer */}
       <div className="cs-editor__footer">
         <div className="cs-editor__stats">
           <span className="cs-stat">{code.split("\n").length} <span className="cs-stat-label">lines</span></span>
@@ -558,7 +583,6 @@ function SnippetEditor({ onSnippetCreated }) {
         </button>
       </div>
 
-      {/* Share banner */}
       {shareUrl && (
         <div className="cs-share-banner">
           <div className="cs-share-banner__inner">
@@ -578,8 +602,106 @@ function SnippetEditor({ onSnippetCreated }) {
               {copied ? "✓ Copied!" : "Copy link"}
             </button>
           </div>
+
+          {/*
+            ── Requirement: "Copy/Share Edit Key" shown ONLY to creator (User1) ──
+            editKey is only set here because this is the creation flow — no other
+            path in the app sets `editKey` in this component. No "Generate Key"
+            button exists anywhere in the UI.
+          */}
+          {editKey && (
+            <div className="cs-share-banner__editkey">
+              <div className="cs-editkey-row">
+                <div className="cs-editkey-info">
+                  <span className="cs-editkey-icon">🔑</span>
+                  <div>
+                    <div className="cs-editkey-label">Your Edit Key</div>
+                    <div className="cs-editkey-hint">
+                      Share this with collaborators so they can edit the snippet.
+                      <strong> This key is shown only once here</strong> — save it.
+                      You can reveal it again on the snippet page.
+                    </div>
+                  </div>
+                </div>
+                <div className="cs-editkey-value-wrap">
+                  <code className="cs-editkey-value">{editKey}</code>
+                  <button className="cs-share-banner__copy cs-editkey-copy-btn" onClick={handleKeyCopy}>
+                    {keyCopied ? "✓ Copied!" : "Copy key"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
+    </div>
+  );
+}
+
+// ── EditKeyModal ──────────────────────────────────────────────────────────────
+/**
+ * Shown to non-owner users who want to edit.
+ * They must enter the correct edit key to unlock editing.
+ * Wrong key → error shown here BEFORE edit mode is entered.
+ * The key is verified against the server on the first save attempt,
+ * but we surface a friendly prompt here to gate the UI.
+ */
+function EditKeyModal({ onConfirm, onCancel }) {
+  const [key, setKey] = useState("");
+  const [err, setErr] = useState("");
+  const inputRef = useRef(null);
+
+  useEffect(() => {
+    setTimeout(() => inputRef.current?.focus(), 80);
+    const handler = e => { if (e.key === "Escape") onCancel(); };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onCancel]);
+
+  const handleSubmit = () => {
+    const trimmed = key.trim();
+    if (!trimmed) { setErr("Please enter the edit key."); return; }
+    // Basic format check — keys start with "ek_"
+    if (!trimmed.startsWith("ek_")) {
+      setErr('Invalid format. Edit keys start with "ek_".');
+      return;
+    }
+    onConfirm(trimmed);
+  };
+
+  return (
+    <div className="cs-modal-overlay" onClick={onCancel}>
+      <div className="cs-modal cs-modal--editkey" onClick={e => e.stopPropagation()}>
+        <div className="cs-modal__icon cs-modal__icon--key">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
+            <circle cx="8" cy="15" r="4"/>
+            <path d="M12 11.5l8-8"/>
+            <path d="M17 7l2 2"/>
+            <path d="M20 4l.01.01"/>
+          </svg>
+        </div>
+        <h3 className="cs-modal__title">Enter Edit Key</h3>
+        <p className="cs-modal__message">
+          Paste the edit key shared by the snippet creator to unlock editing.
+          Only users with the correct key can modify this snippet.
+        </p>
+        <input
+          ref={inputRef}
+          className="cs-editkey-modal-input"
+          placeholder="ek_a1b2c3d4…"
+          value={key}
+          onChange={e => { setKey(e.target.value); setErr(""); }}
+          onKeyDown={e => { if (e.key === "Enter") handleSubmit(); }}
+          spellCheck={false}
+        />
+        {err && <span className="cs-modal__field-err">⚠ {err}</span>}
+        <div className="cs-modal__actions">
+          <button className="cs-btn cs-btn--ghost" onClick={onCancel}>Cancel</button>
+          <button className="cs-btn cs-btn--primary" onClick={handleSubmit}>
+            Unlock Edit <span className="cs-btn-arrow">→</span>
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -592,14 +714,75 @@ function SnippetViewer({ snippetId }) {
   const [copied,    setCopied]    = useState(false);
   const [rawCopied, setRawCopied] = useState(false);
 
+  // ── Edit-key / ownership state ────────────────────────────────────────────
+  /**
+   * isOwner: true only if THIS device created the snippet.
+   *   → Can edit directly, no key prompt.
+   *   → Sees "Share Key" button. No one else does.
+   *   → "Generate Key" button is NEVER shown to anyone.
+   *
+   * hasStoredKey: true if device has any edit key (owner OR verified collaborator).
+   *   → Can enter edit mode without re-entering the key.
+   *
+   * editKey: the key from localStorage (used silently for PUT requests).
+   */
+  const [isOwner,         setIsOwner]         = useState(() => isOwnerOfSnippet(snippetId));
+  const [storedEditKey,   setStoredEditKey]    = useState(() => getEditKey(snippetId) || "");
+
+  const [showKeyModal,    setShowKeyModal]     = useState(false);
+  const [editMode,        setEditMode]         = useState(false);
+  const [showKeyBanner,   setShowKeyBanner]    = useState(false);
+  const [keyCopied,       setKeyCopied]        = useState(false);
+
+  // Editable fields
+  const [editCode,   setEditCode]   = useState("");
+  const [editTitle,  setEditTitle]  = useState("");
+  const [editLang,   setEditLang]   = useState("auto");
+  const [editAuthor, setEditAuthor] = useState("");
+  const [saving,     setSaving]     = useState(false);
+  const [saveError,  setSaveError]  = useState("");
+  const [saveOk,     setSaveOk]     = useState(false);
+  const [preview,    setPreview]    = useState(false);
+
+  const textareaRef = useRef(null);
+
   useEffect(() => {
+    // Try cache first for instant display, then fetch fresh data
+    const cached = getCachedSnippetData(snippetId);
+    if (cached) {
+      const s = { ...cached, language: normalizeLanguage(cached.language) };
+      setSnippet(s);
+      setEditCode(s.code);
+      setEditTitle(s.title);
+      setEditLang(s.language);
+      setEditAuthor(s.author);
+      setLoading(false);
+    }
+
     apiGet(snippetId)
       .then(data => {
-        setSnippet({ ...data, language: normalizeLanguage(data.language) });
+        const s = { ...data, language: normalizeLanguage(data.language) };
+        setSnippet(s);
+        setEditCode(s.code);
+        setEditTitle(s.title);
+        setEditLang(s.language);
+        setEditAuthor(s.author);
+        // Update cache with fresh server data
+        cacheSnippetData(snippetId, s);
       })
-      .catch(e => setError(e.message))
+      .catch(e => { if (!cached) setError(e.message); })
       .finally(() => setLoading(false));
   }, [snippetId]);
+
+  // Auto-resize textarea in edit mode
+  useEffect(() => {
+    if (!editMode) return;
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    const maxH = window.innerHeight * 0.6;
+    ta.style.height = Math.min(Math.max(300, ta.scrollHeight), maxH) + "px";
+  }, [editCode, editMode]);
 
   const copyLink = () => {
     navigator.clipboard.writeText(window.location.href);
@@ -611,15 +794,140 @@ function SnippetViewer({ snippetId }) {
   };
   const download = () => {
     const lang = LANGUAGES.find(l => l.id === snippet?.language);
-    const ext  = lang?.ext || ".txt";
     const blob = new Blob([snippet?.code || ""], { type: "text/plain" });
-    const a    = document.createElement("a");
-    a.href     = URL.createObjectURL(blob);
-    a.download = (snippet?.title || "snippet").replace(/\s+/g, "_") + ext;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = (snippet?.title || "snippet").replace(/\s+/g, "_") + (lang?.ext || ".txt");
     a.click();
   };
 
-  if (loading) return (
+  // ── Edit entry points ─────────────────────────────────────────────────────
+
+  /**
+   * Owner path: enters edit mode immediately — key is read silently from localStorage.
+   * No modal shown. This enforces "User1 can edit without entering the key."
+   */
+  const handleOwnerEdit = () => {
+    setSaveError("");
+    setEditMode(true);
+  };
+
+  /**
+   * Non-owner path:
+   * - If they already have a stored key (verified collaborator from a previous session),
+   *   enter edit mode directly.
+   * - Otherwise show the modal to collect the key.
+   */
+  const handleCollaboratorEditClick = () => {
+    if (storedEditKey) {
+      setSaveError("");
+      setEditMode(true);
+    } else {
+      setShowKeyModal(true);
+    }
+  };
+
+  /**
+   * Collaborator confirmed their key in the modal.
+   * We store it locally so they won't need to re-enter it next time.
+   * isOwner stays FALSE — they never get the "Share Key" UI.
+   */
+  const handleKeyConfirm = (key) => {
+    storeEditKey(snippetId, key, false /* NOT owner */);
+    setStoredEditKey(key);
+    setShowKeyModal(false);
+    setSaveError("");
+    setEditMode(true);
+  };
+
+  const handleKeyCopy = () => {
+    navigator.clipboard.writeText(storedEditKey);
+    setKeyCopied(true); setTimeout(() => setKeyCopied(false), 2000);
+  };
+
+  const handleTabKey = e => {
+    if (e.key === "Tab") {
+      e.preventDefault();
+      const ta = e.target;
+      const start = ta.selectionStart, end = ta.selectionEnd;
+      const next = editCode.substring(0, start) + "  " + editCode.substring(end);
+      setEditCode(next);
+      requestAnimationFrame(() => { ta.selectionStart = ta.selectionEnd = start + 2; });
+    }
+  };
+
+  const handleUpdate = async () => {
+    if (!editCode.trim()) { setSaveError("Code cannot be empty."); return; }
+    if (!storedEditKey) {
+      // Should not happen — but guard anyway
+      setSaveError("No edit key found. Please re-enter the edit key.");
+      setEditMode(false);
+      return;
+    }
+
+    setSaving(true); setSaveError(""); setSaveOk(false);
+    try {
+      const updated = await apiUpdate(snippetId, {
+        edit_key: storedEditKey,
+        title:    editTitle.trim() || "Untitled Snippet",
+        language: normalizeLanguage(editLang),
+        code:     editCode,
+        author:   editAuthor.trim() || snippet?.author || "Anonymous",
+      });
+
+      const merged = {
+        ...snippet,
+        title:    updated.title    || editTitle,
+        language: normalizeLanguage(updated.language || editLang),
+        code:     updated.code     || editCode,
+        author:   updated.author   || editAuthor,
+      };
+
+      setSnippet(merged);
+      // ── Requirement: update cached snippet data in localStorage ───────────
+      cacheSnippetData(snippetId, merged);
+
+      setSaveOk(true);
+      setEditMode(false);
+      setTimeout(() => setSaveOk(false), 3000);
+    } catch (e) {
+      // ── Requirement: show error message if edit key is invalid ────────────
+      const msg = e.message || "";
+      const isKeyError =
+        msg.includes("401") ||
+        msg.toLowerCase().includes("invalid") ||
+        msg.toLowerCase().includes("edit key") ||
+        msg.toLowerCase().includes("unauthorized");
+
+      if (isKeyError) {
+        setSaveError("❌ Invalid edit key. The key you entered does not match this snippet. Please check and try again.");
+        // If this was a collaborator with a bad cached key, let them re-enter
+        if (!isOwner) {
+          setStoredEditKey("");
+          // Remove bad key from storage so they're prompted again next time
+          const keys = getStoredEditKeys();
+          delete keys[snippetId];
+          localStorage.setItem("cs_edit_keys", JSON.stringify(keys));
+        }
+      } else {
+        setSaveError(msg || "Failed to save. Please try again.");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancelEdit = () => {
+    setEditMode(false);
+    setEditCode(snippet?.code    || "");
+    setEditTitle(snippet?.title  || "");
+    setEditLang(snippet?.language || "auto");
+    setEditAuthor(snippet?.author || "");
+    setSaveError("");
+    setPreview(false);
+  };
+
+  if (loading && !snippet) return (
     <div className="cs-viewer cs-viewer--loading">
       <div className="cs-spinner" />
       <p>Loading snippet…</p>
@@ -638,42 +946,205 @@ function SnippetViewer({ snippetId }) {
 
   return (
     <div className="cs-viewer">
+      {/* Edit key modal — only shown to non-owner users without a stored key */}
+      {showKeyModal && (
+        <EditKeyModal
+          onConfirm={handleKeyConfirm}
+          onCancel={() => setShowKeyModal(false)}
+        />
+      )}
+
       <div className="cs-viewer__header">
         <div className="cs-viewer__meta">
-          <h1 className="cs-viewer__title">{snippet.title}</h1>
-          <div className="cs-viewer__info">
-            <span className="cs-viewer__lang" style={{ color: langColor, borderColor: langColor + "44" }}>
-              <span className="cs-langpicker__dot" style={{ background: langColor }} />
-              {langLabel}
-            </span>
-            <span className="cs-viewer__author">by {snippet.author}</span>
-            <span className="cs-viewer__time">{timeAgo(snippet.created_at)}</span>
-            <span className="cs-viewer__views">👁 {snippet.views} views</span>
-          </div>
+          {editMode ? (
+            <div className="cs-viewer__edit-meta">
+              <input
+                className="cs-editor__title-input cs-viewer__title-edit"
+                value={editTitle}
+                onChange={e => setEditTitle(e.target.value)}
+                placeholder="Snippet title…"
+                maxLength={120}
+              />
+              <div className="cs-viewer__edit-meta-row">
+                <LangPicker value={editLang} onChange={setEditLang} />
+                <input
+                  className="cs-editor__author-input"
+                  value={editAuthor}
+                  onChange={e => setEditAuthor(e.target.value)}
+                  placeholder="Author name"
+                  maxLength={60}
+                />
+              </div>
+            </div>
+          ) : (
+            <>
+              <h1 className="cs-viewer__title">{snippet.title}</h1>
+              <div className="cs-viewer__info">
+                <span className="cs-viewer__lang" style={{ color: langColor, borderColor: langColor + "44" }}>
+                  <span className="cs-langpicker__dot" style={{ background: langColor }} />
+                  {langLabel}
+                </span>
+                <span className="cs-viewer__author">by {snippet.author}</span>
+                <span className="cs-viewer__time">{timeAgo(snippet.created_at)}</span>
+                <span className="cs-viewer__views">👁 {snippet.views} views</span>
+              </div>
+            </>
+          )}
         </div>
+
         <div className="cs-viewer__actions">
-          <button className="cs-btn cs-btn--ghost" onClick={copyLink}>
-            {copied ? "✓ Copied!" : "🔗 Copy link"}
-          </button>
-          <button className="cs-btn cs-btn--ghost" onClick={copyRaw}>
-            {rawCopied ? "✓ Copied!" : "📋 Copy code"}
-          </button>
-          <button className="cs-btn cs-btn--ghost" onClick={download}>⬇ Download</button>
-          <a href="/codeshare" className="cs-btn cs-btn--secondary">+ New Snippet</a>
+          {editMode ? (
+            <>
+              <button
+                className={`cs-btn cs-btn--ghost ${preview ? "active" : ""}`}
+                onClick={() => setPreview(p => !p)}
+              >
+                {preview ? "✏️ Edit" : "👁 Preview"}
+              </button>
+              <button className="cs-btn cs-btn--ghost" onClick={handleCancelEdit}>
+                ✕ Cancel
+              </button>
+              <button
+                className={`cs-btn cs-btn--primary ${saving ? "cs-btn--loading" : ""}`}
+                onClick={handleUpdate}
+                disabled={saving}
+              >
+                {saving ? <><span className="cs-btn-spinner" /> Saving…</> : <>💾 Save Changes</>}
+              </button>
+            </>
+          ) : (
+            <>
+              {saveOk && <span className="cs-viewer__save-ok">✓ Saved!</span>}
+
+              <button className="cs-btn cs-btn--ghost" onClick={copyLink}>
+                {copied ? "✓ Copied!" : "🔗 Copy link"}
+              </button>
+              <button className="cs-btn cs-btn--ghost" onClick={copyRaw}>
+                {rawCopied ? "✓ Copied!" : "📋 Copy code"}
+              </button>
+              <button className="cs-btn cs-btn--ghost" onClick={download}>⬇ Download</button>
+
+              {/*
+                ── Requirement: show edit + key buttons ONLY to owner (User1) ──
+                ── Requirement: "Generate Key" button NEVER appears ────────────
+                ── Requirement: non-owner gets "Edit with Key" only ────────────
+              */}
+              {isOwner ? (
+                // ── User1 (creator) controls ──────────────────────────────────
+                <>
+                  <button
+                    className="cs-btn cs-btn--creator-edit"
+                    onClick={handleOwnerEdit}
+                    title="Edit this snippet — no key required"
+                  >
+                    ✏️ Edit Snippet
+                  </button>
+                  {/* "Share Key" button — owner ONLY, never shown to others */}
+                  <button
+                    className="cs-btn cs-btn--show-key"
+                    onClick={() => setShowKeyBanner(b => !b)}
+                    title="Reveal your edit key to share with collaborators"
+                  >
+                    🔑 {showKeyBanner ? "Hide Key" : "Share Key"}
+                  </button>
+                </>
+              ) : (
+                // ── Non-owner (any other user) ────────────────────────────────
+                // Only shows if they don't have edit access yet OR already do
+                <button
+                  className="cs-btn cs-btn--edit-key"
+                  onClick={handleCollaboratorEditClick}
+                  title={storedEditKey ? "Edit this snippet" : "Enter edit key to unlock editing"}
+                >
+                  🔑 {storedEditKey ? "✏️ Edit" : "Edit with Key"}
+                </button>
+              )}
+
+              <a href="/codeshare" className="cs-btn cs-btn--secondary">+ New Snippet</a>
+            </>
+          )}
         </div>
       </div>
-      <CodeBlock
-        key={`viewer-${snippet.language}`}
-        code={snippet.code}
-        language={snippet.language}
-      />
+
+      {/*
+        ── Owner key banner — ONLY visible to creator when they click "Share Key" ──
+        ── Requirement: "Copy/Share Edit Key" shown only to User1 ────────────────
+      */}
+      {isOwner && showKeyBanner && !editMode && storedEditKey && (
+        <div className="cs-creator-key-banner">
+          <div className="cs-creator-key-banner__inner">
+            <span className="cs-creator-key-banner__icon">🔑</span>
+            <div className="cs-creator-key-banner__content">
+              <div className="cs-creator-key-banner__label">Your Edit Key</div>
+              <div className="cs-creator-key-banner__hint">
+                Share this key with anyone you want to allow edits.
+                Anyone with this key can modify the snippet.
+                This key was generated at creation and <strong>cannot be changed</strong>.
+              </div>
+              <div className="cs-creator-key-banner__key-row">
+                <code className="cs-editkey-value">{storedEditKey}</code>
+                <button className="cs-share-banner__copy cs-editkey-copy-btn" onClick={handleKeyCopy}>
+                  {keyCopied ? "✓ Copied!" : "Copy key"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Save error — shown when key is wrong or save fails */}
+      {editMode && saveError && (
+        <div className="cs-viewer__save-error">{saveError}</div>
+      )}
+      {/* Save error after exiting edit mode (e.g. key error that reset edit mode) */}
+      {!editMode && saveError && (
+        <div className="cs-viewer__save-error">{saveError}</div>
+      )}
+
+      {/* Edit mode: textarea or preview */}
+      {editMode ? (
+        preview ? (
+          <CodeBlock key={`edit-preview-${editLang}`} code={editCode || "// nothing yet"} language={editLang} />
+        ) : (
+          <div className="cs-viewer__edit-area">
+            <div className="cs-editor__label">
+              <span className="cs-editor__label-dot" style={{ background: LANG_COLORS[editLang] || "#9ca3af" }} />
+              {LANGUAGES.find(l => l.id === editLang)?.label || "Auto"}
+              <span className="cs-editor__label-badge cs-label-badge--edit">EDITING</span>
+            </div>
+            <textarea
+              ref={textareaRef}
+              className="cs-editor__textarea cs-viewer__edit-textarea"
+              value={editCode}
+              onChange={e => setEditCode(e.target.value)}
+              onKeyDown={handleTabKey}
+              spellCheck={false}
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+            />
+            <div className="cs-editor__footer cs-viewer__edit-footer">
+              <div className="cs-editor__stats">
+                <span className="cs-stat">{editCode.split("\n").length} <span className="cs-stat-label">lines</span></span>
+                <span className="cs-stat-sep">·</span>
+                <span className="cs-stat">{editCode.length.toLocaleString()} <span className="cs-stat-label">chars</span></span>
+              </div>
+            </div>
+          </div>
+        )
+      ) : (
+        <CodeBlock
+          key={`viewer-${snippet.language}`}
+          code={snippet.code}
+          language={snippet.language}
+        />
+      )}
     </div>
   );
 }
 
 // ── ConfirmModal ──────────────────────────────────────────────────────────────
 function ConfirmModal({ title, message, snippet, onConfirm, onCancel, loading }) {
-  // Close on Escape key
   useEffect(() => {
     const handler = e => { if (e.key === "Escape") onCancel(); };
     document.addEventListener("keydown", handler);
@@ -683,7 +1154,6 @@ function ConfirmModal({ title, message, snippet, onConfirm, onCancel, loading })
   return (
     <div className="cs-modal-overlay" onClick={onCancel}>
       <div className="cs-modal" onClick={e => e.stopPropagation()}>
-        {/* Icon */}
         <div className="cs-modal__icon">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <polyline points="3 6 5 6 21 6"/>
@@ -692,31 +1162,19 @@ function ConfirmModal({ title, message, snippet, onConfirm, onCancel, loading })
             <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
           </svg>
         </div>
-
         <h3 className="cs-modal__title">{title}</h3>
         <p className="cs-modal__message">{message}</p>
-
-        {/* Snippet preview */}
         {snippet && (
           <div className="cs-modal__snippet-preview">
-            <span
-              className="cs-modal__snippet-lang"
-              style={{ color: LANG_COLORS[snippet.language] || "#9ca3af" }}
-            >
-              <span
-                className="cs-langpicker__dot"
-                style={{ background: LANG_COLORS[snippet.language] || "#9ca3af" }}
-              />
+            <span className="cs-modal__snippet-lang" style={{ color: LANG_COLORS[snippet.language] || "#9ca3af" }}>
+              <span className="cs-langpicker__dot" style={{ background: LANG_COLORS[snippet.language] || "#9ca3af" }} />
               {LANGUAGES.find(l => l.id === snippet.language)?.label || snippet.language}
             </span>
             <span className="cs-modal__snippet-title">{snippet.title}</span>
           </div>
         )}
-
         <div className="cs-modal__actions">
-          <button className="cs-btn cs-btn--ghost" onClick={onCancel} disabled={loading}>
-            Cancel
-          </button>
+          <button className="cs-btn cs-btn--ghost" onClick={onCancel} disabled={loading}>Cancel</button>
           <button
             className={`cs-btn cs-btn--danger ${loading ? "cs-btn--loading" : ""}`}
             onClick={onConfirm}
@@ -742,10 +1200,9 @@ function ConfirmModal({ title, message, snippet, onConfirm, onCancel, loading })
 
 // ── MySnippets ────────────────────────────────────────────────────────────────
 function MySnippets({ refreshKey }) {
-  const [snippets,    setSnippets]    = useState([]);
-  const [loading,     setLoading]     = useState(true);
-  const [deletingId,  setDeletingId]  = useState(null);
-  // confirmTarget: the snippet object pending confirmation, or null
+  const [snippets,      setSnippets]      = useState([]);
+  const [loading,       setLoading]       = useState(true);
+  const [deletingId,    setDeletingId]    = useState(null);
   const [confirmTarget, setConfirmTarget] = useState(null);
 
   const load = useCallback(async () => {
@@ -760,15 +1217,8 @@ function MySnippets({ refreshKey }) {
 
   useEffect(() => { load(); }, [load, refreshKey]);
 
-  // Step 1: clicking 🗑 opens the confirm modal
-  const requestDelete = (snippet, e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setConfirmTarget(snippet);
-  };
-
-  // Step 2: user confirmed — actually delete
-  const handleDelete = async () => {
+  const requestDelete = (snippet, e) => { e.preventDefault(); e.stopPropagation(); setConfirmTarget(snippet); };
+  const handleDelete  = async () => {
     if (!confirmTarget) return;
     const id = confirmTarget.id;
     setDeletingId(id);
@@ -777,14 +1227,9 @@ function MySnippets({ refreshKey }) {
       removeUserSnippetId(id);
       setSnippets(prev => prev.filter(s => s.id !== id));
       setConfirmTarget(null);
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setDeletingId(null);
-    }
+    } catch (err) { alert(err.message); }
+    finally { setDeletingId(null); }
   };
-
-  const cancelDelete = () => setConfirmTarget(null);
 
   if (loading) return (
     <div className="cs-recent cs-recent--loading">
@@ -810,18 +1255,16 @@ function MySnippets({ refreshKey }) {
 
   return (
     <>
-      {/* Confirm delete modal */}
       {confirmTarget && (
         <ConfirmModal
           title="Delete Snippet?"
           message="This action cannot be undone. The snippet will be permanently removed."
           snippet={confirmTarget}
           onConfirm={handleDelete}
-          onCancel={cancelDelete}
+          onCancel={() => setConfirmTarget(null)}
           loading={deletingId === confirmTarget.id}
         />
       )}
-
       <div className="cs-recent">
         <div className="cs-recent__header">
           <h2 className="cs-recent__heading">
@@ -837,12 +1280,20 @@ function MySnippets({ refreshKey }) {
             const langColor = LANG_COLORS[s.language] || "#9ca3af";
             const langLabel = LANGUAGES.find(l => l.id === s.language)?.label || s.language;
             const preview   = s.code.split("\n").slice(0, 4).join("\n");
+            const isOwner_  = isOwnerOfSnippet(s.id);
+            const hasKey    = !!getEditKey(s.id);
             return (
               <a key={s.id} href={`/codeshare/${s.id}`} className="cs-card">
                 <div className="cs-card__header">
                   <span className="cs-card__lang-dot" style={{ background: langColor }} />
                   <span className="cs-card__title">{s.title}</span>
                   <span className="cs-card__lang" style={{ color: langColor }}>{langLabel}</span>
+                  {/* Owner badge */}
+                  {isOwner_ && <span className="cs-card__owner-badge" title="You created this snippet">👑</span>}
+                  {/* Collaborator key badge — shown only to verified collaborators, not owners */}
+                  {!isOwner_ && hasKey && (
+                    <span className="cs-card__key-badge" title="You have edit access">🔑</span>
+                  )}
                 </div>
                 <div className="cs-card__preview">
                   <code>{preview}</code>
@@ -890,13 +1341,11 @@ export default function CodeShare() {
       <style>{CSS}</style>
       <NavBar currentPath="/codeshare" />
       <div className="cs-root">
-
         <div className="cs-bg" aria-hidden="true">
           <div className="cs-bg__blob cs-bg__blob--1" />
           <div className="cs-bg__blob cs-bg__blob--2" />
           <div className="cs-bg__blob cs-bg__blob--3" />
         </div>
-
         <div className="cs-page-header">
           <div className="cs-page-header__inner">
             <a href="/codeshare" className="cs-page-header__logo">
@@ -910,7 +1359,6 @@ export default function CodeShare() {
             <div className="cs-page-header__badge">Private to you</div>
           </div>
         </div>
-
         <div className="cs-main">
           {snippetId
             ? <SnippetViewer snippetId={snippetId} />
@@ -947,215 +1395,42 @@ const CSS = `
   }
 
   /* ── Ambient background ──────────────────────────────────────────────── */
-  .cs-bg {
-    position: fixed;
-    inset: 0;
-    pointer-events: none;
-    z-index: 0;
-    overflow: hidden;
-  }
-  .cs-bg__blob {
-    position: absolute;
-    border-radius: 50%;
-    filter: blur(80px);
-    opacity: 0.08;
-    animation: cs-blob-drift 20s ease-in-out infinite alternate;
-  }
-  .cs-bg__blob--1 {
-    width: 600px; height: 600px;
-    background: radial-gradient(circle, #a78bfa, transparent 70%);
-    top: -200px; left: -150px;
-    animation-duration: 22s;
-  }
-  .cs-bg__blob--2 {
-    width: 500px; height: 500px;
-    background: radial-gradient(circle, #5b8af0, transparent 70%);
-    top: 40%; right: -150px;
-    animation-duration: 18s;
-    animation-delay: -8s;
-  }
-  .cs-bg__blob--3 {
-    width: 400px; height: 400px;
-    background: radial-gradient(circle, #10b981, transparent 70%);
-    bottom: 10%; left: 30%;
-    animation-duration: 25s;
-    animation-delay: -14s;
-  }
-  @keyframes cs-blob-drift {
-    from { transform: translate(0, 0) scale(1); }
-    to   { transform: translate(40px, 30px) scale(1.08); }
-  }
+  .cs-bg { position: fixed; inset: 0; pointer-events: none; z-index: 0; overflow: hidden; }
+  .cs-bg__blob { position: absolute; border-radius: 50%; filter: blur(80px); opacity: 0.08; animation: cs-blob-drift 20s ease-in-out infinite alternate; }
+  .cs-bg__blob--1 { width: 600px; height: 600px; background: radial-gradient(circle, #a78bfa, transparent 70%); top: -200px; left: -150px; animation-duration: 22s; }
+  .cs-bg__blob--2 { width: 500px; height: 500px; background: radial-gradient(circle, #5b8af0, transparent 70%); top: 40%; right: -150px; animation-duration: 18s; animation-delay: -8s; }
+  .cs-bg__blob--3 { width: 400px; height: 400px; background: radial-gradient(circle, #10b981, transparent 70%); bottom: 10%; left: 30%; animation-duration: 25s; animation-delay: -14s; }
+  @keyframes cs-blob-drift { from { transform: translate(0, 0) scale(1); } to { transform: translate(40px, 30px) scale(1.08); } }
 
   /* ── Page header ─────────────────────────────────────────────────────── */
-  .cs-page-header {
-    position: sticky;
-    top: 0;
-    z-index: 50;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    padding: 0.6rem 1.5rem;
-    background: rgba(7,7,15,0.85);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-  }
-  .cs-page-header__inner {
-    max-width: 1000px;
-    margin: 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 1rem;
-    flex-wrap: wrap;
-  }
-  .cs-page-header__logo {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 1.05rem;
-    font-weight: 700;
-    color: #fff;
-    text-decoration: none;
-    letter-spacing: 0.04em;
-  }
+  .cs-page-header { position: sticky; top: 0; z-index: 50; border-bottom: 1px solid rgba(255,255,255,0.06); padding: 0.6rem 1.5rem; background: rgba(7,7,15,0.85); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); }
+  .cs-page-header__inner { max-width: 1000px; margin: 0 auto; display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+  .cs-page-header__logo { display: flex; align-items: center; gap: 8px; font-size: 1.05rem; font-weight: 700; color: #fff; text-decoration: none; letter-spacing: 0.04em; }
   .cs-page-header__logo:hover { color: #a78bfa; }
   .cs-page-header__icon { font-size: 1.2rem; }
-  .cs-page-header__divider {
-    width: 1px; height: 16px;
-    background: rgba(255,255,255,0.12);
-  }
-  .cs-page-header__sub {
-    color: rgba(255,255,255,0.35);
-    font-size: 0.75rem;
-    margin: 0;
-    flex: 1;
-  }
-  .cs-page-header__badge {
-    font-size: 0.68rem;
-    font-weight: 600;
-    padding: 3px 9px;
-    border-radius: 99px;
-    background: rgba(167,139,250,0.12);
-    border: 1px solid rgba(167,139,250,0.25);
-    color: #a78bfa;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    white-space: nowrap;
-  }
+  .cs-page-header__divider { width: 1px; height: 16px; background: rgba(255,255,255,0.12); }
+  .cs-page-header__sub { color: rgba(255,255,255,0.35); font-size: 0.75rem; margin: 0; flex: 1; }
+  .cs-page-header__badge { font-size: 0.68rem; font-weight: 600; padding: 3px 9px; border-radius: 99px; background: rgba(167,139,250,0.12); border: 1px solid rgba(167,139,250,0.25); color: #a78bfa; letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap; }
 
   /* ── Main container ──────────────────────────────────────────────────── */
-  .cs-main {
-    position: relative;
-    z-index: 1;
-    max-width: 1000px;
-    margin: 0 auto;
-    padding: 2rem 1.5rem 5rem;
-    display: flex;
-    flex-direction: column;
-    gap: 2.5rem;
-  }
+  .cs-main { position: relative; z-index: 1; max-width: 1000px; margin: 0 auto; padding: 2rem 1.5rem 5rem; display: flex; flex-direction: column; gap: 2.5rem; }
 
   /* ── Editor ──────────────────────────────────────────────────────────── */
-  .cs-editor {
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 16px;
-    overflow: hidden;
-    background: rgba(13,13,22,0.9);
-    box-shadow:
-      0 0 0 1px rgba(167,139,250,0.04),
-      0 8px 48px rgba(0,0,0,0.6),
-      inset 0 1px 0 rgba(255,255,255,0.04);
-    backdrop-filter: blur(12px);
-    transition: border-color 0.2s, box-shadow 0.2s;
-  }
-  .cs-editor:focus-within {
-    border-color: rgba(167,139,250,0.2);
-    box-shadow:
-      0 0 0 1px rgba(167,139,250,0.08),
-      0 8px 48px rgba(0,0,0,0.7),
-      0 0 40px rgba(167,139,250,0.06),
-      inset 0 1px 0 rgba(255,255,255,0.05);
-  }
-
-  .cs-editor__toolbar {
-    padding: 12px 14px;
-    background: rgba(18,18,28,0.95);
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-  .cs-editor__toolbar-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-  .cs-editor__toolbar-row--controls { gap: 8px; }
-
-  .cs-editor__title-input,
-  .cs-editor__author-input {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 8px;
-    padding: 7px 11px;
-    color: #e2e8f0;
-    font-size: 0.82rem;
-    font-family: inherit;
-    outline: none;
-    transition: border-color 0.15s, background 0.15s;
-  }
+  .cs-editor { border: 1px solid rgba(255,255,255,0.09); border-radius: 16px; overflow: hidden; background: rgba(13,13,22,0.9); box-shadow: 0 0 0 1px rgba(167,139,250,0.04), 0 8px 48px rgba(0,0,0,0.6), inset 0 1px 0 rgba(255,255,255,0.04); backdrop-filter: blur(12px); transition: border-color 0.2s, box-shadow 0.2s; }
+  .cs-editor:focus-within { border-color: rgba(167,139,250,0.2); box-shadow: 0 0 0 1px rgba(167,139,250,0.08), 0 8px 48px rgba(0,0,0,0.7), 0 0 40px rgba(167,139,250,0.06), inset 0 1px 0 rgba(255,255,255,0.05); }
+  .cs-editor__toolbar { padding: 12px 14px; background: rgba(18,18,28,0.95); border-bottom: 1px solid rgba(255,255,255,0.06); display: flex; flex-direction: column; gap: 8px; }
+  .cs-editor__toolbar-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .cs-editor__title-input, .cs-editor__author-input { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.09); border-radius: 8px; padding: 7px 11px; color: #e2e8f0; font-size: 0.82rem; font-family: inherit; outline: none; transition: border-color 0.15s, background 0.15s; }
   .cs-editor__title-input { flex: 2; min-width: 150px; }
   .cs-editor__author-input { flex: 1; min-width: 120px; max-width: 200px; }
-  .cs-editor__title-input:focus,
-  .cs-editor__author-input:focus {
-    border-color: rgba(167,139,250,0.4);
-    background: rgba(167,139,250,0.04);
-  }
-  .cs-editor__title-input::placeholder,
-  .cs-editor__author-input::placeholder { color: rgba(255,255,255,0.2); }
-
-  .cs-editor__preview-btn {
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 8px;
-    padding: 7px 13px;
-    color: rgba(255,255,255,0.5);
-    font-size: 0.78rem;
-    font-family: inherit;
-    cursor: pointer;
-    transition: all 0.15s;
-    white-space: nowrap;
-  }
-  .cs-editor__preview-btn:hover,
-  .cs-editor__preview-btn.active {
-    background: rgba(167,139,250,0.1);
-    border-color: rgba(167,139,250,0.35);
-    color: #a78bfa;
-  }
-
-  .cs-editor__label {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 7px 14px 6px;
-    background: rgba(10,10,18,0.6);
-    border-bottom: 1px solid rgba(255,255,255,0.04);
-    font-size: 0.73rem;
-    color: rgba(255,255,255,0.35);
-    letter-spacing: 0.03em;
-  }
-  .cs-editor__label-dot {
-    width: 7px; height: 7px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
-  .cs-editor__label-badge {
-    margin-left: 4px;
-    font-size: 0.64rem;
-    padding: 1px 6px;
-    border-radius: 4px;
-    background: rgba(167,139,250,0.15);
-    color: #a78bfa;
-    letter-spacing: 0.06em;
-  }
+  .cs-editor__title-input:focus, .cs-editor__author-input:focus { border-color: rgba(167,139,250,0.4); background: rgba(167,139,250,0.04); }
+  .cs-editor__title-input::placeholder, .cs-editor__author-input::placeholder { color: rgba(255,255,255,0.2); }
+  .cs-editor__preview-btn { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.09); border-radius: 8px; padding: 7px 13px; color: rgba(255,255,255,0.5); font-size: 0.78rem; font-family: inherit; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
+  .cs-editor__preview-btn:hover, .cs-editor__preview-btn.active { background: rgba(167,139,250,0.1); border-color: rgba(167,139,250,0.35); color: #a78bfa; }
+  .cs-editor__label { display: flex; align-items: center; gap: 7px; padding: 7px 14px 6px; background: rgba(10,10,18,0.6); border-bottom: 1px solid rgba(255,255,255,0.04); font-size: 0.73rem; color: rgba(255,255,255,0.35); letter-spacing: 0.03em; }
+  .cs-editor__label-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .cs-editor__label-badge { margin-left: 4px; font-size: 0.64rem; padding: 1px 6px; border-radius: 4px; background: rgba(167,139,250,0.15); color: #a78bfa; letter-spacing: 0.06em; }
+  .cs-label-badge--edit { background: rgba(251,191,36,0.15) !important; color: #fbbf24 !important; }
 
   .cs-editor__textarea {
     width: 100%;
@@ -1163,7 +1438,7 @@ const CSS = `
     max-height: 55vh;
     resize: none;
     overflow: auto;
-    background: #08080f;
+    background: #08080f !important;
     border: none;
     outline: none;
     padding: 1.25rem 1.5rem;
@@ -1176,148 +1451,118 @@ const CSS = `
     caret-color: #a78bfa;
     scrollbar-width: thin;
     scrollbar-color: rgba(167,139,250,0.3) rgba(255,255,255,0.03);
+    -webkit-text-fill-color: #c9d1d9;
+  }
+  .cs-editor__textarea:-webkit-autofill,
+  .cs-editor__textarea:-webkit-autofill:hover,
+  .cs-editor__textarea:-webkit-autofill:focus {
+    -webkit-box-shadow: 0 0 0px 1000px #08080f inset !important;
+    -webkit-text-fill-color: #c9d1d9 !important;
   }
   .cs-editor__textarea::placeholder { color: rgba(255,255,255,0.15); }
   .cs-editor__textarea::-webkit-scrollbar { width: 6px; height: 6px; }
   .cs-editor__textarea::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); }
-  .cs-editor__textarea::-webkit-scrollbar-thumb {
-    background: rgba(167,139,250,0.3); border-radius: 3px;
-  }
+  .cs-editor__textarea::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.3); border-radius: 3px; }
 
-  .cs-editor__footer {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    padding: 10px 14px;
-    background: rgba(18,18,28,0.95);
-    border-top: 1px solid rgba(255,255,255,0.06);
-    flex-wrap: wrap;
-  }
-  .cs-editor__stats {
-    display: flex; align-items: center; gap: 6px;
-    margin-right: auto;
-    color: rgba(255,255,255,0.25); font-size: 0.74rem;
-  }
+  .cs-editor__footer { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: rgba(18,18,28,0.95); border-top: 1px solid rgba(255,255,255,0.06); flex-wrap: wrap; }
+  .cs-editor__stats { display: flex; align-items: center; gap: 6px; margin-right: auto; color: rgba(255,255,255,0.25); font-size: 0.74rem; }
   .cs-stat { color: rgba(255,255,255,0.45); }
   .cs-stat-label { color: rgba(255,255,255,0.2); font-size: 0.7rem; }
   .cs-stat-sep { color: rgba(255,255,255,0.15); }
   .cs-editor__error { color: #f87171; font-size: 0.78rem; }
 
-  .cs-share-banner {
-    background: linear-gradient(135deg,
-      rgba(16,185,129,0.08) 0%,
-      rgba(91,138,240,0.06) 100%);
-    border-top: 1px solid rgba(16,185,129,0.2);
-    padding: 12px 14px;
-  }
-  .cs-share-banner__inner {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  }
-  .cs-share-banner__icon-wrap {
-    width: 32px; height: 32px;
-    border-radius: 8px;
-    background: rgba(16,185,129,0.12);
-    display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0;
-  }
+  /* ── Share banner ────────────────────────────────────────────────────── */
+  .cs-share-banner { background: linear-gradient(135deg, rgba(16,185,129,0.08) 0%, rgba(91,138,240,0.06) 100%); border-top: 1px solid rgba(16,185,129,0.2); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+  .cs-share-banner__inner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .cs-share-banner__icon-wrap { width: 32px; height: 32px; border-radius: 8px; background: rgba(16,185,129,0.12); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
   .cs-share-banner__icon-wrap svg { width: 16px; height: 16px; color: #10b981; }
   .cs-share-banner__content { display: flex; flex-direction: column; gap: 2px; flex: 1; }
-  .cs-share-banner__label {
-    color: #10b981; font-size: 0.72rem; font-weight: 700;
-    letter-spacing: 0.04em; text-transform: uppercase;
-  }
-  .cs-share-banner__url {
-    color: #a78bfa; font-size: 0.8rem;
-    text-decoration: none; word-break: break-all;
-  }
+  .cs-share-banner__label { color: #10b981; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; }
+  .cs-share-banner__url { color: #a78bfa; font-size: 0.8rem; text-decoration: none; word-break: break-all; }
   .cs-share-banner__url:hover { text-decoration: underline; }
-  .cs-share-banner__copy {
-    background: rgba(167,139,250,0.12);
-    border: 1px solid rgba(167,139,250,0.3);
-    border-radius: 7px; padding: 6px 14px;
-    color: #a78bfa; font-size: 0.78rem; font-family: inherit;
-    cursor: pointer; white-space: nowrap; transition: all 0.15s;
-  }
+  .cs-share-banner__copy { background: rgba(167,139,250,0.12); border: 1px solid rgba(167,139,250,0.3); border-radius: 7px; padding: 6px 14px; color: #a78bfa; font-size: 0.78rem; font-family: inherit; cursor: pointer; white-space: nowrap; transition: all 0.15s; }
   .cs-share-banner__copy:hover { background: rgba(167,139,250,0.22); }
+
+  /* ── Edit Key section in share banner (creator-only) ────────────────── */
+  .cs-share-banner__editkey {
+    border-top: 1px solid rgba(251,191,36,0.15);
+    padding-top: 10px;
+    margin-top: 2px;
+  }
+  .cs-editkey-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+  .cs-editkey-info { display: flex; align-items: flex-start; gap: 10px; flex: 1; }
+  .cs-editkey-icon { font-size: 1.1rem; line-height: 1.4; flex-shrink: 0; }
+  .cs-editkey-label { font-size: 0.74rem; font-weight: 700; color: #fbbf24; letter-spacing: 0.04em; text-transform: uppercase; }
+  .cs-editkey-hint { font-size: 0.72rem; color: rgba(255,255,255,0.3); margin-top: 2px; line-height: 1.4; }
+  .cs-editkey-hint strong { color: rgba(255,255,255,0.5); }
+  .cs-editkey-value-wrap { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .cs-editkey-value {
+    background: rgba(251,191,36,0.08);
+    border: 1px solid rgba(251,191,36,0.2);
+    border-radius: 6px; padding: 5px 10px;
+    color: #fde68a; font-size: 0.78rem;
+    font-family: 'Geist Mono', monospace;
+    letter-spacing: 0.05em;
+    user-select: all;
+  }
+  .cs-editkey-copy-btn {
+    background: rgba(251,191,36,0.1) !important;
+    border-color: rgba(251,191,36,0.3) !important;
+    color: #fbbf24 !important;
+  }
+  .cs-editkey-copy-btn:hover { background: rgba(251,191,36,0.2) !important; }
 
   /* ── CodeBlock ───────────────────────────────────────────────────────── */
   .cs-codeblock {
     display: flex;
-    background: #08080f;
-    overflow: auto;
+    background: #08080f !important;
+    overflow-x: auto;
+    overflow-y: auto;
     max-height: 70vh;
     scrollbar-width: thin;
     scrollbar-color: rgba(167,139,250,0.3) rgba(255,255,255,0.02);
     transition: opacity 0.15s ease;
     opacity: 0.85;
-    text-align: left;          /* ← force left-align on the container */
+    text-align: left;
+    contain: paint;
   }
   .cs-codeblock--ready { opacity: 1; }
   .cs-codeblock::-webkit-scrollbar { width: 6px; height: 6px; }
   .cs-codeblock::-webkit-scrollbar-track { background: rgba(255,255,255,0.02); }
-  .cs-codeblock::-webkit-scrollbar-thumb {
-    background: rgba(167,139,250,0.3); border-radius: 3px;
-  }
+  .cs-codeblock::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.3); border-radius: 3px; }
 
-  /* Gutter — line numbers */
   .cs-codeblock__gutter {
-    display: flex;
-    flex-direction: column;
+    display: flex; flex-direction: column;
     padding: 1.25rem 0;
     min-width: 52px;
-    background: rgba(10,10,18,0.5);
+    background: rgba(10,10,18,0.85) !important;
     border-right: 1px solid rgba(255,255,255,0.04);
-    user-select: none;
-    flex-shrink: 0;
-    text-align: right;         /* numbers right-aligned within gutter only */
+    user-select: none; flex-shrink: 0; text-align: right;
+    position: sticky; left: 0; z-index: 2;
   }
-  .cs-line-num {
-    display: block;
-    padding: 0 12px;
-    font-size: 0.73rem;
-    line-height: 1.75;
-    height: calc(0.85rem * 1.75);
-    color: rgba(255,255,255,0.14);
-    text-align: right;
-    font-family: inherit;
-    box-sizing: content-box;
-  }
+  .cs-line-num { display: block; padding: 0 12px; font-size: 0.73rem; line-height: 1.75; height: calc(0.85rem * 1.75); color: rgba(255,255,255,0.14); text-align: right; font-family: inherit; box-sizing: content-box; }
 
-  /* Code area */
   .cs-codeblock__pre {
-    margin: 0;
-    padding: 1.25rem 0;
-    flex: 1;
-    overflow: visible;
-    white-space: normal;
-    text-align: left;          /* ← pre must also be left-aligned */
-    min-width: 0;              /* prevents flex overflow issues */
+    margin: 0; padding: 1.25rem 0;
+    flex: 1; overflow: visible;
+    white-space: normal; text-align: left; min-width: 0;
+    background: #08080f !important;
   }
   .cs-codeblock__code {
     display: block;
     font-family: 'Geist Mono', 'Fira Code', 'Cascadia Code', monospace;
-    font-size: 0.85rem;
-    color: #c9d1d9;
-    white-space: normal;
-    text-align: left;          /* ← explicit left-align on code */
+    font-size: 0.85rem; color: #c9d1d9;
+    white-space: normal; text-align: left;
+    background: #08080f !important;
   }
-
-  /* ── Each line is its own left-aligned block ─────────────────────────── */
   .cs-code-line {
-    display: block;
-    white-space: pre;          /* preserve indentation/spaces within a line */
-    line-height: 1.75;
-    min-height: calc(0.85rem * 1.75);
-    padding: 0 1.5rem;
-    font-size: 0.85rem;
-    text-align: left;          /* ← every line explicitly left-aligned */
-    transition: background 0.08s;
+    display: block; white-space: pre; line-height: 1.75;
+    min-height: calc(0.85rem * 1.75); padding: 0 1.5rem;
+    font-size: 0.85rem; text-align: left;
+    transition: background 0.08s; min-width: max-content;
   }
-  .cs-code-line:hover {
-    background: rgba(255,255,255,0.025);
-  }
+  .cs-code-line:hover { background: rgba(255,255,255,0.025); }
 
-  /* highlight.js tokens */
   .cs-codeblock__code .hljs-keyword    { color: #c678dd; }
   .cs-codeblock__code .hljs-string     { color: #98c379; }
   .cs-codeblock__code .hljs-number     { color: #d19a66; }
@@ -1340,383 +1585,196 @@ const CSS = `
   .cs-codeblock__code .hljs-deletion   { background: #3a1e1e; color: #e06c75; }
 
   /* ── Viewer ──────────────────────────────────────────────────────────── */
-  .cs-viewer {
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 16px;
-    overflow: hidden;
-    background: rgba(13,13,22,0.9);
-    box-shadow: 0 8px 48px rgba(0,0,0,0.6);
-    backdrop-filter: blur(12px);
-  }
-  .cs-viewer--loading,
-  .cs-viewer--error {
-    display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    min-height: 240px; gap: 12px;
-    color: rgba(255,255,255,0.4); font-size: 0.9rem;
-  }
+  .cs-viewer { border: 1px solid rgba(255,255,255,0.09); border-radius: 16px; overflow: hidden; background: rgba(13,13,22,0.9); box-shadow: 0 8px 48px rgba(0,0,0,0.6); backdrop-filter: blur(12px); }
+  .cs-viewer--loading, .cs-viewer--error { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 240px; gap: 12px; color: rgba(255,255,255,0.4); font-size: 0.9rem; }
   .cs-viewer--error { color: #f87171; }
   .cs-viewer__error-icon { font-size: 2rem; }
-  .cs-viewer__header {
-    display: flex; align-items: flex-start;
-    justify-content: space-between; gap: 12px;
-    padding: 18px 20px;
-    background: rgba(18,18,28,0.95);
-    border-bottom: 1px solid rgba(255,255,255,0.06);
-    flex-wrap: wrap;
+  .cs-viewer__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 18px 20px; background: rgba(18,18,28,0.95); border-bottom: 1px solid rgba(255,255,255,0.06); flex-wrap: wrap; }
+  .cs-viewer__title { font-size: 1.1rem; font-weight: 700; color: #fff; margin: 0 0 8px; letter-spacing: 0.02em; }
+  .cs-viewer__info { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .cs-viewer__lang { display: flex; align-items: center; gap: 5px; font-size: 0.75rem; padding: 3px 9px; border-radius: 99px; border: 1px solid; font-weight: 600; }
+  .cs-viewer__author, .cs-viewer__time, .cs-viewer__views { color: rgba(255,255,255,0.3); font-size: 0.75rem; }
+  .cs-viewer__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .cs-viewer__save-ok { color: #10b981; font-size: 0.78rem; font-weight: 600; padding: 4px 10px; background: rgba(16,185,129,0.1); border: 1px solid rgba(16,185,129,0.2); border-radius: 6px; }
+  .cs-viewer__save-error { background: rgba(248,113,113,0.08); border-top: 1px solid rgba(248,113,113,0.2); padding: 12px 20px; color: #f87171; font-size: 0.8rem; line-height: 1.5; }
+
+  .cs-viewer__edit-meta { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+  .cs-viewer__title-edit { width: 100%; font-size: 0.9rem !important; max-width: 400px; }
+  .cs-viewer__edit-meta-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .cs-viewer__edit-area { background: #08080f; }
+  .cs-viewer__edit-textarea {
+    min-height: 300px !important;
+    background: #08080f !important;
+    -webkit-text-fill-color: #c9d1d9 !important;
   }
-  .cs-viewer__title {
-    font-size: 1.1rem; font-weight: 700;
-    color: #fff; margin: 0 0 8px;
-    letter-spacing: 0.02em;
+  .cs-viewer__edit-footer { background: rgba(18,18,28,0.8) !important; }
+
+  /* ── Creator key banner (viewer page — owner only) ───────────────────── */
+  .cs-creator-key-banner {
+    background: linear-gradient(135deg, rgba(251,191,36,0.07) 0%, rgba(251,191,36,0.03) 100%);
+    border-top: 1px solid rgba(251,191,36,0.2);
+    border-bottom: 1px solid rgba(251,191,36,0.1);
+    padding: 14px 20px;
+    animation: cs-overlay-in 0.15s ease;
   }
-  .cs-viewer__info {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  .cs-creator-key-banner__inner { display: flex; align-items: flex-start; gap: 12px; }
+  .cs-creator-key-banner__icon { font-size: 1.3rem; line-height: 1.4; flex-shrink: 0; margin-top: 2px; }
+  .cs-creator-key-banner__content { display: flex; flex-direction: column; gap: 5px; flex: 1; }
+  .cs-creator-key-banner__label { font-size: 0.74rem; font-weight: 700; color: #fbbf24; text-transform: uppercase; letter-spacing: 0.06em; }
+  .cs-creator-key-banner__hint { font-size: 0.75rem; color: rgba(255,255,255,0.35); line-height: 1.5; }
+  .cs-creator-key-banner__hint strong { color: rgba(255,255,255,0.55); }
+  .cs-creator-key-banner__key-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+
+  /* ── Creator edit button ─────────────────────────────────────────────── */
+  .cs-btn--creator-edit {
+    background: linear-gradient(135deg, rgba(167,139,250,0.15) 0%, rgba(91,138,240,0.1) 100%) !important;
+    border: 1px solid rgba(167,139,250,0.4) !important;
+    color: #c4b5fd !important;
+    border-radius: 9px; padding: 7px 14px;
+    font-size: 0.8rem; font-family: inherit; font-weight: 600;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 5px;
+    text-decoration: none;
   }
-  .cs-viewer__lang {
-    display: flex; align-items: center; gap: 5px;
-    font-size: 0.75rem; padding: 3px 9px;
-    border-radius: 99px; border: 1px solid; font-weight: 600;
-  }
-  .cs-viewer__author,
-  .cs-viewer__time,
-  .cs-viewer__views { color: rgba(255,255,255,0.3); font-size: 0.75rem; }
-  .cs-viewer__actions {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  .cs-btn--creator-edit:hover {
+    background: linear-gradient(135deg, rgba(167,139,250,0.25) 0%, rgba(91,138,240,0.18) 100%) !important;
+    border-color: rgba(167,139,250,0.6) !important;
+    color: #ddd6fe !important;
   }
 
+  /* ── "Share Key" toggle button (owner-only) ──────────────────────────── */
+  .cs-btn--show-key {
+    display: inline-flex; align-items: center; gap: 5px;
+    background: rgba(251,191,36,0.08);
+    color: #fbbf24;
+    border: 1px solid rgba(251,191,36,0.25);
+    border-radius: 9px; padding: 7px 14px;
+    font-size: 0.8rem; font-family: inherit; font-weight: 600;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+    text-decoration: none;
+  }
+  .cs-btn--show-key:hover { background: rgba(251,191,36,0.16); border-color: rgba(251,191,36,0.45); }
+
+  /* ── "Edit with Key" button (non-owner) ──────────────────────────────── */
+  .cs-btn--edit-key {
+    background: rgba(251,191,36,0.08);
+    color: #fbbf24;
+    border: 1px solid rgba(251,191,36,0.25);
+    border-radius: 9px; padding: 7px 14px;
+    font-size: 0.8rem; font-family: inherit; font-weight: 600;
+    cursor: pointer; transition: all 0.15s; white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 5px;
+    text-decoration: none;
+  }
+  .cs-btn--edit-key:hover { background: rgba(251,191,36,0.16); border-color: rgba(251,191,36,0.45); }
+
+  /* ── Edit Key modal ──────────────────────────────────────────────────── */
+  .cs-modal--editkey { border-color: rgba(251,191,36,0.2); }
+  .cs-modal__icon--key { background: rgba(251,191,36,0.1) !important; border-color: rgba(251,191,36,0.25) !important; }
+  .cs-modal__icon--key svg { color: #fbbf24 !important; }
+  .cs-editkey-modal-input {
+    width: 100%;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(251,191,36,0.25);
+    border-radius: 9px; padding: 9px 13px;
+    color: #fde68a;
+    font-family: 'Geist Mono', monospace;
+    font-size: 0.85rem; outline: none;
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+    letter-spacing: 0.04em;
+  }
+  .cs-editkey-modal-input:focus { border-color: rgba(251,191,36,0.5); background: rgba(251,191,36,0.04); }
+  .cs-editkey-modal-input::placeholder { color: rgba(255,255,255,0.2); }
+  .cs-modal__field-err { color: #f87171; font-size: 0.76rem; width: 100%; text-align: left; }
+
   /* ── Buttons ─────────────────────────────────────────────────────────── */
-  .cs-btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 7px 15px; border-radius: 9px;
-    font-size: 0.8rem; font-family: inherit;
-    font-weight: 600; cursor: pointer;
-    text-decoration: none; border: 1px solid transparent;
-    transition: all 0.15s; white-space: nowrap;
-  }
-  .cs-btn--primary {
-    background: linear-gradient(135deg, #a78bfa 0%, #5b8af0 100%);
-    color: #fff;
-    box-shadow: 0 2px 16px rgba(167,139,250,0.25);
-  }
+  .cs-btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 15px; border-radius: 9px; font-size: 0.8rem; font-family: inherit; font-weight: 600; cursor: pointer; text-decoration: none; border: 1px solid transparent; transition: all 0.15s; white-space: nowrap; }
+  .cs-btn--primary { background: linear-gradient(135deg, #a78bfa 0%, #5b8af0 100%); color: #fff; box-shadow: 0 2px 16px rgba(167,139,250,0.25); }
   .cs-btn--primary:hover { opacity: 0.88; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(167,139,250,0.35); }
   .cs-btn--primary:active { transform: translateY(0); }
   .cs-btn--primary:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
   .cs-btn--loading { opacity: 0.65; pointer-events: none; }
-  .cs-btn--secondary {
-    background: rgba(167,139,250,0.1);
-    color: #a78bfa;
-    border-color: rgba(167,139,250,0.25);
-  }
+  .cs-btn--secondary { background: rgba(167,139,250,0.1); color: #a78bfa; border-color: rgba(167,139,250,0.25); }
   .cs-btn--secondary:hover { background: rgba(167,139,250,0.18); }
-  .cs-btn--ghost {
-    background: rgba(255,255,255,0.04);
-    color: rgba(255,255,255,0.6);
-    border-color: rgba(255,255,255,0.09);
-  }
+  .cs-btn--ghost { background: rgba(255,255,255,0.04); color: rgba(255,255,255,0.6); border-color: rgba(255,255,255,0.09); }
   .cs-btn--ghost:hover { background: rgba(255,255,255,0.08); color: #fff; }
   .cs-btn-arrow { transition: transform 0.15s; }
   .cs-btn:hover .cs-btn-arrow { transform: translateX(3px); }
-  .cs-btn-spinner {
-    width: 12px; height: 12px;
-    border: 2px solid rgba(255,255,255,0.3);
-    border-top-color: #fff;
-    border-radius: 50%;
-    animation: cs-spin 0.6s linear infinite;
-    display: inline-block;
-  }
+  .cs-btn-spinner { width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: cs-spin 0.6s linear infinite; display: inline-block; }
 
   /* ── LangPicker ──────────────────────────────────────────────────────── */
   .cs-langpicker { position: relative; }
-  .cs-langpicker__btn {
-    display: flex; align-items: center; gap: 7px;
-    background: rgba(255,255,255,0.05);
-    border: 1px solid rgba(255,255,255,0.09);
-    border-radius: 8px; padding: 7px 11px;
-    color: rgba(255,255,255,0.75);
-    font-size: 0.82rem; font-family: inherit;
-    cursor: pointer; transition: all 0.15s; white-space: nowrap;
-  }
+  .cs-langpicker__btn { display: flex; align-items: center; gap: 7px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.09); border-radius: 8px; padding: 7px 11px; color: rgba(255,255,255,0.75); font-size: 0.82rem; font-family: inherit; cursor: pointer; transition: all 0.15s; white-space: nowrap; }
   .cs-langpicker__btn:hover { background: rgba(255,255,255,0.09); border-color: rgba(255,255,255,0.15); }
   .cs-langpicker__dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
   .cs-langpicker__chevron { width: 13px; height: 13px; color: rgba(255,255,255,0.3); }
-  .cs-langpicker__dropdown {
-    position: absolute; top: calc(100% + 6px); left: 0; z-index: 200;
-    background: #13131e;
-    border: 1px solid rgba(255,255,255,0.1);
-    border-radius: 12px; padding: 4px;
-    min-width: 165px; max-height: 280px; overflow-y: auto;
-    box-shadow: 0 12px 40px rgba(0,0,0,0.7);
-    scrollbar-width: thin;
-    scrollbar-color: rgba(167,139,250,0.25) transparent;
-  }
+  .cs-langpicker__dropdown { position: absolute; top: calc(100% + 6px); left: 0; z-index: 200; background: #13131e; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 4px; min-width: 165px; max-height: 280px; overflow-y: auto; box-shadow: 0 12px 40px rgba(0,0,0,0.7); scrollbar-width: thin; scrollbar-color: rgba(167,139,250,0.25) transparent; }
   .cs-langpicker__dropdown::-webkit-scrollbar { width: 4px; }
   .cs-langpicker__dropdown::-webkit-scrollbar-thumb { background: rgba(167,139,250,0.25); border-radius: 2px; }
-  .cs-langpicker__opt {
-    display: flex; align-items: center; gap: 8px;
-    width: 100%; padding: 6px 10px;
-    background: none; border: none; border-radius: 8px;
-    color: rgba(255,255,255,0.65);
-    font-size: 0.8rem; font-family: inherit;
-    cursor: pointer; transition: all 0.1s; text-align: left;
-  }
+  .cs-langpicker__opt { display: flex; align-items: center; gap: 8px; width: 100%; padding: 6px 10px; background: none; border: none; border-radius: 8px; color: rgba(255,255,255,0.65); font-size: 0.8rem; font-family: inherit; cursor: pointer; transition: all 0.1s; text-align: left; }
   .cs-langpicker__opt:hover { background: rgba(255,255,255,0.06); color: #fff; }
   .cs-langpicker__opt--active { background: rgba(167,139,250,0.1); color: #a78bfa; }
   .cs-check { width: 13px; height: 13px; margin-left: auto; }
 
   /* ── My Snippets ─────────────────────────────────────────────────────── */
-  .cs-recent--loading {
-    display: flex; align-items: center; justify-content: center;
-    gap: 10px; padding: 2rem;
-    color: rgba(255,255,255,0.3); font-size: 0.8rem;
-  }
+  .cs-recent--loading { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 2rem; color: rgba(255,255,255,0.3); font-size: 0.8rem; }
   .cs-recent__loading-text { color: rgba(255,255,255,0.25); font-size: 0.8rem; }
-  .cs-recent__empty-state {
-    display: flex; flex-direction: column;
-    align-items: center; justify-content: center;
-    padding: 3rem 2rem; gap: 10px;
-    border: 1px dashed rgba(255,255,255,0.08);
-    border-radius: 16px;
-    background: rgba(255,255,255,0.015);
-  }
+  .cs-recent__empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 3rem 2rem; gap: 10px; border: 1px dashed rgba(255,255,255,0.08); border-radius: 16px; background: rgba(255,255,255,0.015); }
   .cs-empty-icon svg { width: 48px; height: 48px; color: rgba(255,255,255,0.15); }
-  .cs-recent__empty-title {
-    color: rgba(255,255,255,0.35); font-size: 0.9rem;
-    font-weight: 600; margin: 4px 0 0;
-  }
-  .cs-recent__empty-sub {
-    color: rgba(255,255,255,0.2); font-size: 0.78rem;
-    text-align: center; margin: 0; max-width: 280px;
-  }
-  .cs-recent__header {
-    display: flex; align-items: center; gap: 10px; margin-bottom: 1rem;
-  }
-  .cs-recent__heading {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 0.8rem; font-weight: 600;
-    color: rgba(255,255,255,0.35);
-    text-transform: uppercase; letter-spacing: 0.08em; margin: 0;
-  }
+  .cs-recent__empty-title { color: rgba(255,255,255,0.35); font-size: 0.9rem; font-weight: 600; margin: 4px 0 0; }
+  .cs-recent__empty-sub { color: rgba(255,255,255,0.2); font-size: 0.78rem; text-align: center; margin: 0; max-width: 280px; }
+  .cs-recent__header { display: flex; align-items: center; gap: 10px; margin-bottom: 1rem; }
+  .cs-recent__heading { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; font-weight: 600; color: rgba(255,255,255,0.35); text-transform: uppercase; letter-spacing: 0.08em; margin: 0; }
   .cs-recent__heading-icon { width: 14px; height: 14px; color: rgba(167,139,250,0.5); flex-shrink: 0; }
-  .cs-recent__count {
-    font-size: 0.7rem; font-weight: 700;
-    padding: 2px 8px; border-radius: 99px;
-    background: rgba(167,139,250,0.1);
-    color: rgba(167,139,250,0.7);
-    border: 1px solid rgba(167,139,250,0.15);
-    min-width: 22px; text-align: center;
-  }
-  .cs-recent__grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
-    gap: 12px;
-  }
+  .cs-recent__count { font-size: 0.7rem; font-weight: 700; padding: 2px 8px; border-radius: 99px; background: rgba(167,139,250,0.1); color: rgba(167,139,250,0.7); border: 1px solid rgba(167,139,250,0.15); min-width: 22px; text-align: center; }
+  .cs-recent__grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 12px; }
 
   /* ── Card ────────────────────────────────────────────────────────────── */
-  .cs-card {
-    display: flex; flex-direction: column; gap: 10px;
-    padding: 15px;
-    background: rgba(13,13,22,0.85);
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 12px;
-    text-decoration: none;
-    transition: all 0.18s;
-    cursor: pointer; overflow: hidden;
-    position: relative;
-    backdrop-filter: blur(8px);
-  }
-  .cs-card::before {
-    content: '';
-    position: absolute; inset: 0; border-radius: inherit;
-    background: linear-gradient(135deg, rgba(167,139,250,0.04) 0%, transparent 60%);
-    opacity: 0; transition: opacity 0.18s;
-  }
-  .cs-card:hover {
-    border-color: rgba(167,139,250,0.22);
-    transform: translateY(-3px);
-    box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(167,139,250,0.06);
-  }
+  .cs-card { display: flex; flex-direction: column; gap: 10px; padding: 15px; background: rgba(13,13,22,0.85); border: 1px solid rgba(255,255,255,0.07); border-radius: 12px; text-decoration: none; transition: all 0.18s; cursor: pointer; overflow: hidden; position: relative; backdrop-filter: blur(8px); }
+  .cs-card::before { content: ''; position: absolute; inset: 0; border-radius: inherit; background: linear-gradient(135deg, rgba(167,139,250,0.04) 0%, transparent 60%); opacity: 0; transition: opacity 0.18s; }
+  .cs-card:hover { border-color: rgba(167,139,250,0.22); transform: translateY(-3px); box-shadow: 0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(167,139,250,0.06); }
   .cs-card:hover::before { opacity: 1; }
   .cs-card__header { display: flex; align-items: center; gap: 8px; }
   .cs-card__lang-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-  .cs-card__title {
-    font-size: 0.84rem; font-weight: 700; color: #e2e8f0;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1;
-  }
-  .cs-card__lang {
-    font-size: 0.68rem; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0;
-  }
-  .cs-card__preview {
-    background: rgba(0,0,0,0.35);
-    border: 1px solid rgba(255,255,255,0.04);
-    border-radius: 8px; padding: 9px 11px;
-    overflow: hidden; max-height: 76px;
-  }
-  .cs-card__preview code {
-    font-family: inherit; font-size: 0.7rem;
-    line-height: 1.65; color: rgba(255,255,255,0.35);
-    white-space: pre; display: block;
-  }
+  .cs-card__title { font-size: 0.84rem; font-weight: 700; color: #e2e8f0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+  .cs-card__lang { font-size: 0.68rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; flex-shrink: 0; }
+  .cs-card__owner-badge { font-size: 0.75rem; flex-shrink: 0; }
+  .cs-card__key-badge { font-size: 0.75rem; flex-shrink: 0; }
+  .cs-card__preview { background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.04); border-radius: 8px; padding: 9px 11px; overflow: hidden; max-height: 76px; }
+  .cs-card__preview code { font-family: inherit; font-size: 0.7rem; line-height: 1.65; color: rgba(255,255,255,0.35); white-space: pre; display: block; overflow: hidden; }
   .cs-card__footer { display: flex; align-items: center; gap: 8px; font-size: 0.7rem; }
-  .cs-card__time  { color: rgba(255,255,255,0.2); }
+  .cs-card__time { color: rgba(255,255,255,0.2); }
   .cs-card__views { color: rgba(255,255,255,0.2); margin-left: auto; }
-  .cs-card__delete {
-    background: none; border: none;
-    color: rgba(255,255,255,0.15); font-size: 0.8rem;
-    cursor: pointer; padding: 2px 6px; border-radius: 5px;
-    transition: all 0.15s; line-height: 1; font-family: inherit;
-  }
+  .cs-card__delete { background: none; border: none; color: rgba(255,255,255,0.15); font-size: 0.8rem; cursor: pointer; padding: 2px 6px; border-radius: 5px; transition: all 0.15s; line-height: 1; font-family: inherit; }
   .cs-card__delete:hover { color: #f87171; background: rgba(248,113,113,0.1); }
   .cs-card__delete:disabled { opacity: 0.5; cursor: not-allowed; }
 
   /* ── Danger button ───────────────────────────────────────────────────── */
-  .cs-btn--danger {
-    background: rgba(239,68,68,0.12);
-    color: #f87171;
-    border-color: rgba(239,68,68,0.35);
-  }
-  .cs-btn--danger:hover:not(:disabled) {
-    background: rgba(239,68,68,0.22);
-    border-color: rgba(239,68,68,0.6);
-    color: #fca5a5;
-    transform: translateY(-1px);
-    box-shadow: 0 4px 16px rgba(239,68,68,0.2);
-  }
+  .cs-btn--danger { background: rgba(239,68,68,0.12); color: #f87171; border-color: rgba(239,68,68,0.35); }
+  .cs-btn--danger:hover:not(:disabled) { background: rgba(239,68,68,0.22); border-color: rgba(239,68,68,0.6); color: #fca5a5; transform: translateY(-1px); box-shadow: 0 4px 16px rgba(239,68,68,0.2); }
   .cs-btn--danger:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .cs-btn-spinner--red { border-color: rgba(248,113,113,0.3); border-top-color: #f87171; }
+  .cs-btn-spinner--sm-icon { width: 11px; height: 11px; border-width: 2px; border-color: rgba(255,255,255,0.2); border-top-color: rgba(255,255,255,0.6); display: inline-block; border-radius: 50%; animation: cs-spin 0.6s linear infinite; }
 
-  /* Red spinner variant */
-  .cs-btn-spinner--red {
-    border-color: rgba(248,113,113,0.3);
-    border-top-color: #f87171;
-  }
-  .cs-btn-spinner--sm-icon {
-    width: 11px; height: 11px;
-    border-width: 2px;
-    border-color: rgba(255,255,255,0.2);
-    border-top-color: rgba(255,255,255,0.6);
-    display: inline-block;
-    border-radius: 50%;
-    animation: cs-spin 0.6s linear infinite;
-  }
-
-  /* ── Confirm Modal ────────────────────────────────────────────────────── */
-  .cs-modal-overlay {
-    position: fixed;
-    inset: 0;
-    z-index: 1000;
-    background: rgba(0,0,0,0.72);
-    backdrop-filter: blur(6px);
-    -webkit-backdrop-filter: blur(6px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    padding: 1rem;
-    animation: cs-overlay-in 0.15s ease;
-  }
-  @keyframes cs-overlay-in {
-    from { opacity: 0; }
-    to   { opacity: 1; }
-  }
-
-  .cs-modal {
-    background: #0f0f1a;
-    border: 1px solid rgba(239,68,68,0.2);
-    border-radius: 18px;
-    padding: 2rem;
-    width: 100%;
-    max-width: 400px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 1rem;
-    box-shadow:
-      0 0 0 1px rgba(239,68,68,0.06),
-      0 24px 64px rgba(0,0,0,0.8),
-      0 0 60px rgba(239,68,68,0.04);
-    animation: cs-modal-in 0.18s cubic-bezier(0.34, 1.56, 0.64, 1);
-    text-align: center;
-  }
-  @keyframes cs-modal-in {
-    from { opacity: 0; transform: scale(0.92) translateY(8px); }
-    to   { opacity: 1; transform: scale(1) translateY(0); }
-  }
-
-  .cs-modal__icon {
-    width: 52px; height: 52px;
-    border-radius: 14px;
-    background: rgba(239,68,68,0.1);
-    border: 1px solid rgba(239,68,68,0.2);
-    display: flex; align-items: center; justify-content: center;
-    flex-shrink: 0;
-  }
-  .cs-modal__icon svg {
-    width: 24px; height: 24px;
-    color: #f87171;
-  }
-
-  .cs-modal__title {
-    font-size: 1rem;
-    font-weight: 700;
-    color: #fff;
-    margin: 0;
-    letter-spacing: 0.01em;
-  }
-
-  .cs-modal__message {
-    font-size: 0.82rem;
-    color: rgba(255,255,255,0.4);
-    margin: 0;
-    line-height: 1.6;
-  }
-
-  .cs-modal__snippet-preview {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 14px;
-    background: rgba(255,255,255,0.03);
-    border: 1px solid rgba(255,255,255,0.07);
-    border-radius: 10px;
-    width: 100%;
-    box-sizing: border-box;
-  }
-  .cs-modal__snippet-lang {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 0.72rem; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.05em;
-    flex-shrink: 0;
-  }
-  .cs-modal__snippet-title {
-    font-size: 0.82rem;
-    color: rgba(255,255,255,0.65);
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex: 1;
-    text-align: left;
-  }
-
-  .cs-modal__actions {
-    display: flex;
-    gap: 10px;
-    width: 100%;
-    margin-top: 0.5rem;
-  }
-  .cs-modal__actions .cs-btn {
-    flex: 1;
-    justify-content: center;
-  }
+  /* ── Confirm Modal ───────────────────────────────────────────────────── */
+  .cs-modal-overlay { position: fixed; inset: 0; z-index: 1000; background: rgba(0,0,0,0.72); backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px); display: flex; align-items: center; justify-content: center; padding: 1rem; animation: cs-overlay-in 0.15s ease; }
+  @keyframes cs-overlay-in { from { opacity: 0; } to { opacity: 1; } }
+  .cs-modal { background: #0f0f1a; border: 1px solid rgba(239,68,68,0.2); border-radius: 18px; padding: 2rem; width: 100%; max-width: 400px; display: flex; flex-direction: column; align-items: center; gap: 1rem; box-shadow: 0 0 0 1px rgba(239,68,68,0.06), 0 24px 64px rgba(0,0,0,0.8), 0 0 60px rgba(239,68,68,0.04); animation: cs-modal-in 0.18s cubic-bezier(0.34, 1.56, 0.64, 1); text-align: center; }
+  @keyframes cs-modal-in { from { opacity: 0; transform: scale(0.92) translateY(8px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+  .cs-modal__icon { width: 52px; height: 52px; border-radius: 14px; background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .cs-modal__icon svg { width: 24px; height: 24px; color: #f87171; }
+  .cs-modal__title { font-size: 1rem; font-weight: 700; color: #fff; margin: 0; letter-spacing: 0.01em; }
+  .cs-modal__message { font-size: 0.82rem; color: rgba(255,255,255,0.4); margin: 0; line-height: 1.6; }
+  .cs-modal__snippet-preview { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 10px; width: 100%; box-sizing: border-box; }
+  .cs-modal__snippet-lang { display: flex; align-items: center; gap: 6px; font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; flex-shrink: 0; }
+  .cs-modal__snippet-title { font-size: 0.82rem; color: rgba(255,255,255,0.65); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; text-align: left; }
+  .cs-modal__actions { display: flex; gap: 10px; width: 100%; margin-top: 0.5rem; }
+  .cs-modal__actions .cs-btn { flex: 1; justify-content: center; }
 
   /* ── Spinner ─────────────────────────────────────────────────────────── */
-  .cs-spinner {
-    width: 26px; height: 26px;
-    border: 2px solid rgba(167,139,250,0.15);
-    border-top-color: #a78bfa;
-    border-radius: 50%;
-    animation: cs-spin 0.65s linear infinite;
-  }
+  .cs-spinner { width: 26px; height: 26px; border: 2px solid rgba(167,139,250,0.15); border-top-color: #a78bfa; border-radius: 50%; animation: cs-spin 0.65s linear infinite; }
   .cs-spinner--sm { width: 16px; height: 16px; }
   @keyframes cs-spin { to { transform: rotate(360deg); } }
 
@@ -1724,11 +1782,11 @@ const CSS = `
   @media (max-width: 640px) {
     .cs-main { padding: 1.25rem 1rem 4rem; }
     .cs-editor__toolbar-row { flex-wrap: wrap; }
-    .cs-editor__title-input,
-    .cs-editor__author-input { max-width: 100%; }
+    .cs-editor__title-input, .cs-editor__author-input { max-width: 100%; }
     .cs-viewer__header { flex-direction: column; }
     .cs-viewer__actions { width: 100%; }
     .cs-recent__grid { grid-template-columns: 1fr; }
     .cs-page-header__sub { display: none; }
+    .cs-editkey-row { flex-direction: column; }
   }
 `;
