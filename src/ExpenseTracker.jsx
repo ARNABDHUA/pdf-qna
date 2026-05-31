@@ -7,6 +7,8 @@ import GroupSplits from "./Groupsplits";
 import ImportHistory from "./ImportHistory";
 import CommunityLeaderboard from "./CommunityLeaderboard";
 import CsvExport from "./CsvExport";
+import NavBar from "./NavBar";
+import { useNavigate } from 'react-router-dom';
 
 
 // ── Storage Keys ───────────────────────────────────────────────────────────────
@@ -2250,6 +2252,7 @@ export default function ExpenseTracker() {
   const messagesEnd = useRef(null);
   const recognRef   = useRef(null);
   const textareaRef = useRef(null);
+  const navigate = useNavigate();
 
   useEffect(()=>{ localStorage.setItem(STORAGE_KEY, JSON.stringify(expenses)); }, [expenses]);
   useEffect(()=>{ localStorage.setItem(API_KEYS_KEY, JSON.stringify(apiKeys)); }, [apiKeys]);
@@ -2937,13 +2940,14 @@ const handleCloudSuccess = useCallback((result) => {
   return (
     <>
       <style>{CSS}</style>
+    {/* <NavBar currentPath="/expenses" /> */}
       <div className="et-app">
         {sidebarOpen&&<div className="et-overlay" onClick={()=>setSidebarOpen(false)}/>}
 
         {/* ── SIDEBAR ── */}
         <aside className={`et-sidebar ${sidebarOpen?"et-sidebar--open":""}`}>
           <div className="et-sidebar-header">
-            <div className="et-logo"><span className="et-logo-icon">💸</span><div><h1 className="et-logo-title">Expense AI</h1><p className="et-logo-sub">Multi-model · Indian format</p></div></div>
+            <div className="et-logo"><span onClick={() => navigate('/')} className="et-logo-icon">💸</span><div><h1 onClick={() => navigate('/')} className="et-logo-title">Expense AI</h1><p className="et-logo-sub">Multi-model · Indian format</p></div></div>
             <button className="et-close-sidebar" onClick={()=>setSidebarOpen(false)}>✕</button>
           </div>
           <div className="et-summary-cards">
@@ -3019,7 +3023,7 @@ const handleCloudSuccess = useCallback((result) => {
           {/* Top bar */}
           <div className="et-topbar">
             <button className="et-menu-btn" onClick={()=>setSidebarOpen(true)}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg></button>
-            <div className="et-topbar-brand"><span className="et-topbar-icon">💸</span><span className="et-topbar-title">Expense AI</span></div>
+            <div className="et-topbar-brand"><span onClick={() => navigate('/')} className="et-topbar-icon">💸</span><span onClick={() => navigate('/')} className="et-topbar-title">Expense AI</span></div>
             <div className="et-topbar-actions">
               <div className="et-provider-chip" style={{borderColor:prov.color+"55",color:prov.color}}>
                 {prov.icon} {selectedProvider === "free"

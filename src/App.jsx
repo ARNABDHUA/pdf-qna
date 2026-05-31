@@ -7,6 +7,8 @@ import { useFollowUps } from "./hooks/UseFollowUps";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { ShareButton } from "./CollabSession";
 import "./App.css";
+import NavBar from "./NavBar";
+
 
 // ── Provider metadata ─────────────────────────────────────────────────────────
 const PROVIDERS = {
@@ -980,6 +982,8 @@ export default function App() {
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
+    <>
+    <NavBar currentPath="/" /> 
     <div className="app">
       {/* Mobile overlay */}
       <div
@@ -1301,5 +1305,6 @@ export default function App() {
         </div>
       </main>
     </div>
+    </>
   );
 }

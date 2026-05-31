@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from "react";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 const BASE_URL = "https://pdf-qna-backend.onrender.com";
+import NavBar from "./NavBar";
 
 const STEPS = [
   { id: "validate",    label: "Validating URL",        icon: "🔍" },
@@ -249,6 +250,8 @@ export default function YouTubeConverter() {
   const urlValid  = isValidYouTubeUrl(url);
 
   return (
+    <>
+    <NavBar currentPath="/youtube" />
     <div style={styles.root}>
       <style>{`
         @keyframes spin    { to { transform: rotate(360deg); } }
@@ -258,10 +261,10 @@ export default function YouTubeConverter() {
       `}</style>
 
       {/* Back nav */}
-      <a href="/" style={styles.backLink}>
+      {/* <a href="/" style={styles.backLink}>
         <span style={{ width: 16, height: 16, display: "inline-block" }}><Icon.Home /></span>
         Back to QNA-AI
-      </a>
+      </a> */}
 
       <div style={styles.card}>
 
@@ -401,6 +404,7 @@ export default function YouTubeConverter() {
         )}
       </div>
     </div>
+    </>
   );
 }
 

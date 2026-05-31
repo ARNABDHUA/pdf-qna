@@ -6,6 +6,7 @@ import { useChatSessions } from "./hooks/UseChatSessions";
 import MarkdownRenderer from "./MarkdownRenderer";
 import { ShareButton } from "./CollabSession";   // ← NEW
 import "./User.css";
+import NavBar from "./NavBar";
 
 // ── Provider metadata ─────────────────────────────────────────────────────────
 const PROVIDERS = {
@@ -731,6 +732,8 @@ export default function User() {
     : `Coding · ${prov.label} / ${selectedModel}`;
 
   return (
+    <>
+    <NavBar currentPath="/review" />
     <div className="app">
       <div className={`sidebar-overlay${sidebarOpen ? "" : " hidden"}`} onClick={() => setSidebarOpen(false)} />
 
@@ -882,5 +885,6 @@ export default function User() {
         </div>
       </main>
     </div>
+    </>
   );
 }

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from "react-router-dom";
+import NavBar from "./NavBar";
 
 const styles = `
   .fc-root {
@@ -430,6 +431,7 @@ const FileConverter = () => {
 
   return (
     <>
+    <NavBar currentPath="/converter" />
       <style>{styles}</style>
       <div className="fc-root">
         <div className="fc-shell">

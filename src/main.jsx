@@ -8,6 +8,8 @@ import FileConverter from './FileConverter.jsx'
 import CollabSession from "./CollabSession";
 import YouTubeConverter from "./YouTubeConverter";
 import ExpenseTracker from "./ExpenseTracker";
+import CodeShare from "./CodeShare";
+import NavBar    from "./NavBar";
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -21,6 +23,8 @@ createRoot(document.getElementById('root')).render(
         <Route path="/collab/:sessionId" element={<CollabSession />} />
         <Route path="/youtube" element={<YouTubeConverter />} />
         <Route path="/expenses" element={<ExpenseTracker />} />
+        <Route path="/codeshare"    element={<CodeShare />} />
+        <Route path="/codeshare/:id" element={<CodeShare />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
 
