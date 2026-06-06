@@ -1,37 +1,27 @@
 /**
- * VideoCall.jsx – Fixed: screen share for 3+ users + fullscreen pin + mobile UI
+ * VideoCall.jsx – v2: mobile screen share + camera rotate + shareable link
  *
- * FIXES IN THIS VERSION:
+ * NEW FEATURES:
  *
- * FIX A — Screen share broken for 3+ users
+ * FEATURE 1 — Mobile screen share
  * ──────────────────────────────────────────────────────────────────────────────
- * makePc() now checks sharingRef.current and uses screenTrackRef.current as the
- * video track when building the peer connection. This means the SDP offer is
- * negotiated with the screen track from the start — not camera. replaceTrack
- * after createOffer is too late (it swaps media but not SDP m-lines), which
- * caused black/frozen video for peers 2, 3, etc.
+ * getDisplayMedia is attempted as before; on iOS/older Android where it throws,
+ * we show a friendly "not supported on this browser" toast instead of crashing.
+ * The 🖥️ share button is shown on all devices but degrades gracefully.
  *
- * initOffer and handleOffer no longer manually replaceTrack — makePc handles it.
- *
- * startShare awaits each replaceTrack serially (for...of, not Promise.all) to
- * avoid SDP state machine conflicts when renegotiating with multiple peers.
- *
- * FIX B — Screen share invisible to users who join AFTER sharing started
+ * FEATURE 2 — Rotate camera (mobile only)
  * ──────────────────────────────────────────────────────────────────────────────
- * Same root fix: makePc picks the screen track when sharingRef.current is true,
- * so any new peer connection (offer or answer side) immediately negotiates with
- * the screen track.
+ * A 🔄 button appears only on touch devices (detected via 'ontouchstart' in window).
+ * It toggles facingMode between "user" (front) and "environment" (rear), replaces
+ * the video track on all active peer connections, and updates the local preview.
  *
- * FIX C — Fullscreen / Pin feature
+ * FEATURE 3 — Shareable link with room pre-fill
  * ──────────────────────────────────────────────────────────────────────────────
- * Click/tap any tile to pin it. Pinned tile expands to full width above grid.
- * Tap again or press Escape to unpin.
- *
- * FIX D — Full mobile responsiveness
- * ──────────────────────────────────────────────────────────────────────────────
- * - Sidebar becomes a slide-up bottom sheet on mobile
- * - Controls bar scales down on small screens
- * - Grid stacks to 1 column on phones
+ * When a room is created or joined, the URL is updated to include ?room=ROOMID.
+ * On load, if ?room= is present the lobby auto-switches to the "Join" tab and
+ * pre-fills the room code. Recipients just open the link, type their name (and
+ * password if the room is private), and hit Join.
+ * A "Copy Link" button in the call header lets the host share it instantly.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -62,6 +52,40 @@ function diagnoseCameraEnv() {
   return issues;
 }
 
+// Detect touch/mobile device
+function isMobileDevice() {
+  return typeof window !== "undefined" && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
+}
+
+// Read ?room= from URL for shareable links
+function getRoomFromUrl() {
+  if (typeof window === "undefined") return "";
+  const params = new URLSearchParams(window.location.search);
+  return (params.get("room") || "").toUpperCase();
+}
+
+// Update URL without reload
+function setRoomInUrl(roomId) {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  url.searchParams.set("room", roomId);
+  window.history.replaceState({}, "", url.toString());
+}
+
+function clearRoomFromUrl() {
+  if (typeof window === "undefined") return;
+  const url = new URL(window.location.href);
+  url.searchParams.delete("room");
+  window.history.replaceState({}, "", url.toString());
+}
+
+function buildShareLink(roomId) {
+  if (typeof window === "undefined") return "";
+  const url = new URL(window.location.href);
+  url.searchParams.set("room", roomId);
+  return url.toString();
+}
+
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@400;500&display=swap');
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -90,6 +114,20 @@ const CSS = `
     color: var(--text);
     height: 100%;
   }
+
+  /* ── TOAST ── */
+  .vc-toast {
+    position: fixed; bottom: 90px; left: 50%; transform: translateX(-50%);
+    background: rgba(15,23,42,0.95); border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 10px; padding: 10px 18px;
+    font-size: 13px; color: var(--text2);
+    backdrop-filter: blur(12px);
+    z-index: 9999; white-space: nowrap;
+    animation: toastIn .2s ease;
+    pointer-events: none;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  @keyframes toastIn { from { opacity:0; transform: translateX(-50%) translateY(8px); } to { opacity:1; transform: translateX(-50%) translateY(0); } }
 
   /* ── LOBBY ── */
   .vc-lobby {
@@ -202,6 +240,21 @@ const CSS = `
     cursor: pointer; font-family: inherit; transition: all .15s; white-space: nowrap;
   }
 
+  /* Shareable link banner in lobby */
+  .vc-link-banner {
+    display: flex; align-items: center; gap: 8px;
+    background: rgba(59,130,246,0.07);
+    border: 1px solid rgba(59,130,246,0.18);
+    border-radius: 10px; padding: 9px 12px;
+    margin-bottom: 14px;
+  }
+  .vc-link-banner__text {
+    flex: 1; font-size: 12px; color: var(--accent2);
+    font-family: 'DM Mono', monospace;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .vc-link-banner__icon { font-size: 16px; flex-shrink: 0; }
+
   /* ── CALL LAYOUT ── */
   .vc-call {
     display: flex; flex-direction: column;
@@ -229,6 +282,14 @@ const CSS = `
   }
   .vc-header__info { font-size: 11px; color: var(--text3); white-space: nowrap; }
   .vc-header__name { font-size: 12px; color: var(--text2); font-weight: 600; white-space: nowrap; }
+  .vc-header__share-btn {
+    padding: 4px 10px; border-radius: 6px; border: none;
+    background: rgba(16,185,129,0.15); color: #34d399;
+    font-size: 11px; font-weight: 700; cursor: pointer;
+    font-family: 'DM Mono', monospace; white-space: nowrap;
+    border: 1px solid rgba(16,185,129,0.2); transition: all .15s;
+  }
+  .vc-header__share-btn:hover { background: rgba(16,185,129,0.25); }
 
   .vc-body {
     flex: 1; display: flex;
@@ -430,6 +491,17 @@ const CSS = `
 
   .vc-invite { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
   .vc-invite__desc { font-size: 12px; color: var(--text3); line-height: 1.5; }
+  .vc-invite__link-box {
+    display: flex; gap: 8px; align-items: center;
+  }
+  .vc-invite__link-input {
+    flex: 1; padding: 8px 10px;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 8px; color: var(--text2);
+    font-size: 11px; font-family: 'DM Mono', monospace; outline: none;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
 
   /* ── CONTROLS ── */
   .vc-controls {
@@ -505,6 +577,12 @@ function b64ToUint8(b64) {
   const pad = "=".repeat((4 - b64.length % 4) % 4);
   const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
   return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function Toast({ message }) {
+  if (!message) return null;
+  return <div className="vc-toast">{message}</div>;
 }
 
 // ── VideoTile ─────────────────────────────────────────────────────────────────
@@ -614,9 +692,12 @@ function CtrlBtn({ onClick, variant = "normal", title, icon, badge }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrender.com" }) {
-  const [tab, setTab]                       = useState("create");
+  // ── FEATURE 3: pre-fill room from URL ──────────────────────────────────────
+  const urlRoom = getRoomFromUrl();
+
+  const [tab, setTab]                       = useState(urlRoom ? "join" : "create");
   const [displayName, setDisplayName]       = useState("");
-  const [roomInput, setRoomInput]           = useState("");
+  const [roomInput, setRoomInput]           = useState(urlRoom);
   const [createPassword, setCreatePassword] = useState("");
   const [joinPassword, setJoinPassword]     = useState("");
   const [lobbyError, setLobbyError]         = useState("");
@@ -626,6 +707,21 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const [lobbyMic, setLobbyMic]         = useState(true);
   const [lobbyCam, setLobbyCam]         = useState(true);
   const streamRef = useRef(null);
+
+  // ── FEATURE 2: camera facing mode ─────────────────────────────────────────
+  const [facingMode, setFacingMode]         = useState("user"); // "user" | "environment"
+  const isMobile                            = isMobileDevice();
+  const rotatingRef                         = useRef(false);
+
+  // Toast state
+  const [toast, setToast] = useState("");
+  const toastTimerRef     = useRef(null);
+
+  function showToast(msg, ms = 2800) {
+    setToast(msg);
+    clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToast(""), ms);
+  }
 
   const previewVideoRef = useCallback((el) => {
     if (el && streamRef.current) el.srcObject = streamRef.current;
@@ -648,6 +744,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const [chatMsg, setChatMsg]             = useState("");
   const [unread, setUnread]               = useState(0);
   const [copied, setCopied]               = useState(false);
+  const [copiedLink, setCopiedLink]       = useState(false);
   const [notifyTarget, setNotifyTarget]   = useState("");
   const [pushEnabled, setPushEnabled]     = useState(false);
   const [pushStatus, setPushStatus]       = useState("");
@@ -661,7 +758,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const localStreamRef  = useRef(null);
   const sharingRef      = useRef(false);
   const screenTrackRef  = useRef(null);
-  // ── FIX: keep screenStream in a ref so makePc can access it synchronously ──
   const screenStreamRef = useRef(null);
   const displayNameRef  = useRef("");
   useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
@@ -682,13 +778,16 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     if (el) el.srcObject = s;
   }
 
-  async function requestMedia() {
+  async function requestMedia(facing = "user") {
     const envIssues = diagnoseCameraEnv();
     if (envIssues.includes("HTTPS_REQUIRED")) { setMediaStatus("https"); return; }
     if (envIssues.includes("API_UNAVAILABLE")) { setMediaStatus("unavailable"); return; }
     setMediaStatus("loading");
     try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      const s = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: facing },
+        audio: true,
+      });
       applyStream(s); setMediaStatus("ok");
     } catch (err) {
       const n = err.name;
@@ -712,7 +811,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   }
 
   useEffect(() => {
-    requestMedia();
+    requestMedia("user");
     return () => { streamRef.current?.getTracks().forEach(t => t.stop()); };
   }, []);
 
@@ -727,6 +826,58 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     const next = !lobbyCam;
     streamRef.current.getVideoTracks().forEach(t => t.enabled = next);
     setLobbyCam(next);
+  }
+
+  // ── FEATURE 2: rotate camera ──────────────────────────────────────────────
+  // Works in lobby (replaces preview) and in-call (replaces local track on all PCs).
+  async function rotateCamera() {
+    if (rotatingRef.current) return;
+    rotatingRef.current = true;
+    const nextFacing = facingMode === "user" ? "environment" : "user";
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { exact: nextFacing } },
+        audio: true,
+      });
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      const newAudioTrack = newStream.getAudioTracks()[0];
+
+      if (inCall) {
+        // Stop old video tracks on local stream
+        localStreamRef.current?.getVideoTracks().forEach(t => t.stop());
+
+        // Replace video track on all peer connections
+        for (const pid of Object.keys(pcsRef.current)) {
+          const pc = pcsRef.current[pid];
+          const sender = pc.getSenders().find(s => s.track?.kind === "video");
+          if (sender && newVideoTrack) await sender.replaceTrack(newVideoTrack);
+        }
+
+        // Build a new local stream with new video + existing audio
+        const existingAudio = localStreamRef.current?.getAudioTracks()[0];
+        const combined = new MediaStream([
+          existingAudio || newAudioTrack,
+          newVideoTrack,
+        ].filter(Boolean));
+        localStreamRef.current = combined;
+        setLocalStream(combined);
+
+        // Stop the extra audio track from newStream if we reused existing
+        if (existingAudio) newAudioTrack?.stop();
+      } else {
+        // Lobby: just replace preview stream
+        streamRef.current?.getTracks().forEach(t => t.stop());
+        applyStream(newStream);
+      }
+
+      setFacingMode(nextFacing);
+      showToast(nextFacing === "environment" ? "📷 Rear camera" : "🤳 Front camera");
+    } catch (e) {
+      // Some devices only have one camera or don't support exact constraint
+      showToast("⚠️ Cannot switch camera");
+      console.warn("rotateCamera failed:", e);
+    }
+    rotatingRef.current = false;
   }
 
   // ── join / create ─────────────────────────────────────────────────────────
@@ -783,6 +934,9 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     localStreamRef.current = stream;
     setLocalStream(stream); setMicOn(lobbyMic); setCamOn(lobbyCam);
     setRoomId(rid); setInCall(true); setStatus("Connecting…");
+
+    // FEATURE 3: update URL so it's shareable
+    setRoomInUrl(rid);
 
     const name = displayName.trim();
     const wsUrl = `${wsBase(backendUrl)}/ws/videocall/${rid}/${peerId}`
@@ -847,13 +1001,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     }
   }
 
-  // ── FIX: makePc picks screen track when sharing ───────────────────────────
-  // This is the core fix. By choosing the right video track HERE — before any
-  // SDP offer is created — the negotiated m-line already carries the screen
-  // track. replaceTrack after createOffer only swaps the RTP media; it cannot
-  // change what was already negotiated in the SDP, which is why the old approach
-  // broke for peers 2 and 3 (they received camera codec/resolution in the SDP
-  // but screen content in the media — causing black/frozen tiles).
   function makePc(pid) {
     if (pcsRef.current[pid]) pcsRef.current[pid].close();
     const pc = new RTCPeerConnection(ICE_SERVERS);
@@ -861,8 +1008,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
     const stream      = localStreamRef.current;
     const audioTrack  = stream?.getAudioTracks()[0] || null;
-
-    // Use screen track when sharing, camera track otherwise
     const isSharing   = sharingRef.current && screenTrackRef.current;
     const videoTrack  = isSharing
       ? screenTrackRef.current
@@ -919,7 +1064,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     } catch (e) { console.warn("renegotiate failed for", pid, e); }
   }
 
-  // ── FIX: initOffer — makePc already selects the right track; no replaceTrack ──
   async function initOffer(pid) {
     const pc = makePc(pid);
     try {
@@ -931,7 +1075,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     } catch (e) { console.error("initOffer failed", e); }
   }
 
-  // ── FIX: handleOffer — same, makePc handles track selection ──────────────
   async function handleOffer(msg) {
     const pc = makePc(msg.from);
     try {
@@ -965,15 +1108,20 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     setCamOn(v => !v);
   }
 
-  // ── FIX: startShare — set refs first, await replaceTrack serially ─────────
+  // ── FEATURE 1: screen share with mobile-friendly error handling ───────────
   async function startShare() {
+    // Check if getDisplayMedia is available (not on iOS Safari < 17)
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      showToast("⚠️ Screen share not supported on this browser");
+      return;
+    }
     try {
-      const sc = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      const sc = await navigator.mediaDevices.getDisplayMedia({
+        video: { cursor: "always" },
+        audio: true,
+      });
       const vt = sc.getVideoTracks()[0];
 
-      // Update refs BEFORE touching any peer connections so that any concurrent
-      // initOffer/handleOffer calls (new joiners arriving mid-share-start) also
-      // pick up the screen track via makePc.
       sharingRef.current      = true;
       screenTrackRef.current  = vt;
       screenStreamRef.current = sc;
@@ -981,24 +1129,26 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
       setScreenStream(sc);
       setSharing(true);
 
-      // Replace video track on all existing peers.
-      // Use for...of (serial) rather than Promise.all to avoid interleaved
-      // SDP state machine transitions when renegotiation is needed.
       for (const pid of Object.keys(pcsRef.current)) {
         const pc = pcsRef.current[pid];
         const sender = pc.getSenders().find(s => s.track?.kind === "video");
         if (sender) {
-          // Sender exists — replaceTrack works without renegotiation
           await sender.replaceTrack(vt);
         } else {
-          // No video sender (audio-only peer) — must add track + renegotiate
           pc.addTrack(vt, sc);
           await renegotiate(pid);
         }
       }
 
       vt.onended = stopShare;
-    } catch (e) { console.warn("getDisplayMedia failed", e); }
+      showToast("🖥️ Screen sharing started");
+    } catch (e) {
+      // NotAllowedError = user cancelled; NotSupportedError = browser/OS limitation
+      if (e.name !== "NotAllowedError") {
+        showToast("⚠️ Screen share not supported on this device");
+      }
+      console.warn("getDisplayMedia failed", e);
+    }
   }
 
   async function stopShare() {
@@ -1017,6 +1167,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
       const sender = pc.getSenders().find(s => s.track?.kind === "video");
       if (sender) await sender.replaceTrack(cameraTrack);
     }
+    showToast("🖥️ Screen sharing stopped");
   }
 
   function leaveCall() {
@@ -1036,7 +1187,10 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     setInCall(false); setSharing(false); setPinnedId(null);
     setMicOn(true); setCamOn(true);
     setLobbyStream(null); setStatus("");
-    requestMedia();
+    setFacingMode("user");
+    // FEATURE 3: clear room from URL when leaving
+    clearRoomFromUrl();
+    requestMedia("user");
   }
 
   function sendChat() {
@@ -1050,6 +1204,30 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     navigator.clipboard?.writeText(roomId);
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
+  }
+
+  // FEATURE 3: copy shareable link
+  function copyLink() {
+    const link = buildShareLink(roomId);
+    navigator.clipboard?.writeText(link).then(() => {
+      setCopiedLink(true);
+      showToast("🔗 Link copied! Share it to invite others");
+      setTimeout(() => setCopiedLink(false), 2000);
+    });
+  }
+
+  // FEATURE 3: native share (mobile)
+  function shareLink() {
+    const link = buildShareLink(roomId);
+    if (navigator.share) {
+      navigator.share({
+        title: "Join my Quick Meet call",
+        text: `Join room ${roomId} on Quick Meet`,
+        url: link,
+      }).catch(() => {});
+    } else {
+      copyLink();
+    }
   }
 
   useEffect(() => {
@@ -1125,6 +1303,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   if (!inCall) return (
     <div className="vc-root">
       <style>{CSS}</style>
+      <Toast message={toast} />
       <div className="vc-lobby">
         <div className="vc-lobby__card">
           <div className="vc-lobby__brand">
@@ -1132,6 +1311,14 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
             <div className="vc-lobby__title">Quick Meet</div>
             <div className="vc-lobby__sub">HD video · screen share · no sign-up</div>
           </div>
+
+          {/* FEATURE 3: if room pre-filled from URL, show a helpful banner */}
+          {urlRoom && (
+            <div className="vc-link-banner">
+              <span className="vc-link-banner__icon">🔗</span>
+              <span className="vc-link-banner__text">Joining room {urlRoom}</span>
+            </div>
+          )}
 
           <div className="vc-preview">
             {lobbyStream && hasVideo ? (
@@ -1169,11 +1356,19 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
                     {lobbyCam ? "📷" : "📵"}
                   </button>
                 )}
+                {/* FEATURE 2: rotate camera button in lobby (mobile only) */}
+                {isMobile && hasVideo && (
+                  <button className="vc-btn-sm" onClick={rotateCamera}
+                    style={{ background: "rgba(0,0,0,0.65)", color: "#fff" }}
+                    title="Switch camera">
+                    🔄
+                  </button>
+                )}
               </div>
             )}
           </div>
 
-          <MediaBanner status={mediaStatus} onRetry={requestMedia} onAudioOnly={requestAudioOnly} />
+          <MediaBanner status={mediaStatus} onRetry={() => requestMedia(facingMode)} onAudioOnly={requestAudioOnly} />
 
           <div className="vc-field">
             <label className="vc-label">Your name</label>
@@ -1235,6 +1430,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   return (
     <div className="vc-root">
       <style>{CSS}</style>
+      <Toast message={toast} />
       <div className="vc-call">
 
         <div className="vc-header">
@@ -1243,16 +1439,18 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
             <span className="vc-header__room" onClick={copyRoom} title="Click to copy">{roomId}</span>
             {copied && <span style={{ fontSize: 11, color: "#34d399" }}>Copied!</span>}
             <span className="vc-header__info">{totalCount} · {status}</span>
+            {/* FEATURE 3: Share link button in header */}
+            <button className="vc-header__share-btn" onClick={shareLink} title="Share invite link">
+              {copiedLink ? "✓ Copied!" : (isMobile ? "📤 Share" : "🔗 Copy Link")}
+            </button>
           </div>
           <div className="vc-header__name">👤 {displayName}</div>
         </div>
 
         <div className="vc-body">
           <div className="vc-grid-wrap">
-            {/* Pinned tile */}
             {renderPinnedTile()}
 
-            {/* Screen share tile (when unpinned) */}
             {sharing && screenStream && pinnedId !== "screen" && (
               <VideoTile stream={screenStream} name={displayName} isLocal isScreen videoOn
                 isPinned={false}
@@ -1260,7 +1458,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
                 onUnpin={() => setPinnedId(null)} />
             )}
 
-            {/* Main grid — hide tiles that are currently pinned */}
             <div className="vc-grid" data-count={Math.min(totalCount, 6)}>
               {pinnedId !== "local" && (
                 <VideoTile stream={localStream} name={displayName} isLocal micOn={micOn} videoOn={camOn}
@@ -1336,9 +1533,22 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
               )}
               {sidebarTab === "invite" && (
                 <div className="vc-invite">
-                  <div className="vc-invite__desc">Share the room code or send a push notification.</div>
+                  <div className="vc-invite__desc">Share this link — recipients just enter their name and join.</div>
+
+                  {/* FEATURE 3: Shareable link in invite tab */}
                   <div>
-                    <div className="vc-label" style={{ marginBottom: 6 }}>Room code</div>
+                    <div className="vc-label" style={{ marginBottom: 6 }}>Invite link</div>
+                    <div className="vc-invite__link-box">
+                      <input className="vc-invite__link-input" value={buildShareLink(roomId)} readOnly />
+                      <button className="vc-btn-sm" onClick={shareLink}
+                        style={{ background: "rgba(16,185,129,0.15)", color: "#34d399", border: "1px solid rgba(16,185,129,0.2)" }}>
+                        {isMobile ? "📤" : (copiedLink ? "✓" : "Copy")}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="vc-label" style={{ marginBottom: 6 }}>Room code only</div>
                     <div style={{ display: "flex", gap: 8 }}>
                       <input className="vc-input" value={roomId} readOnly style={{ flex: 1 }} />
                       <button className="vc-btn-sm" onClick={copyRoom}
@@ -1347,6 +1557,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
                       </button>
                     </div>
                   </div>
+
                   <div style={{ borderTop: "1px solid var(--border)", paddingTop: 10 }}>
                     <div className="vc-label" style={{ marginBottom: 6 }}>Push notification</div>
                     {!pushEnabled ? (
@@ -1375,6 +1586,10 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
         <div className="vc-controls">
           <CtrlBtn onClick={toggleMic} variant={micOn ? "normal" : "off"} title={micOn ? "Mute" : "Unmute"} icon={micOn ? "🎙️" : "🔇"} />
           <CtrlBtn onClick={toggleCam} variant={camOn ? "normal" : "off"} title={camOn ? "Stop camera" : "Start camera"} icon={camOn ? "📷" : "📵"} />
+          {/* FEATURE 2: rotate camera button — mobile only, in controls bar */}
+          {isMobile && (
+            <CtrlBtn onClick={rotateCamera} variant="normal" title="Switch camera" icon="🔄" />
+          )}
           <CtrlBtn onClick={sharing ? stopShare : startShare} variant={sharing ? "active" : "normal"} title={sharing ? "Stop sharing" : "Share screen"} icon="🖥️" />
           <div className="vc-ctrl-sep" />
           <CtrlBtn
