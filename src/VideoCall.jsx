@@ -279,8 +279,23 @@ const CSS = `
     box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
   }
 
-  /* CSS fallback fullscreen (used when Fullscreen API is blocked) */
-  .vc-pinned--fullscreen .vc-tile {
+  /*
+   * TRUE FULLSCREEN + CSS FALLBACK FULLSCREEN
+   * ─────────────────────────────────────────
+   * When document is in native fullscreen (or CSS fallback), we add
+   * .vc-root--pinned-fs to the root. The pinned tile's .vc-tile then gets
+   * position:fixed; inset:0 so it fills the entire screen regardless of
+   * what its parent's layout says. The video inside uses object-fit:contain
+   * so the full content is shown without cropping (letterboxed).
+   *
+   * Why not :fullscreen on the child div? Android Chrome gives the fullscreen
+   * element a 100vw×100vh box, but its children still lay out at the pre-
+   * fullscreen sizes — causing the zoom/crop issue seen in the screenshot.
+   * Using position:fixed on the *grandchild* bypasses the layout entirely.
+   */
+  .vc-root--pinned-fs .vc-pinned-header { display: none !important; }
+
+  .vc-root--pinned-fs .vc-pinned-wrap .vc-tile {
     position: fixed !important;
     inset: 0 !important;
     width: 100vw !important;
@@ -290,9 +305,19 @@ const CSS = `
     z-index: 500 !important;
     border: none !important;
     box-shadow: none !important;
+    background: #000 !important;
   }
-  .vc-pinned--fullscreen ~ .vc-header,
-  .vc-pinned--fullscreen ~ .vc-controls { display: none !important; }
+  .vc-root--pinned-fs .vc-pinned-wrap .vc-tile video {
+    width: 100% !important;
+    height: 100% !important;
+    object-fit: contain !important;
+    background: #000 !important;
+  }
+
+  /* CSS fallback: also hide chrome UI when using fixed-position fullscreen */
+  .vc-root--pinned-fs .vc-header,
+  .vc-root--pinned-fs .vc-controls,
+  .vc-root--pinned-fs .vc-sidebar { display: none !important; }
 
   /* Overlay controls shown inside fullscreen tile */
   .vc-fullscreen-overlay {
@@ -300,9 +325,9 @@ const CSS = `
     position: fixed; inset: 0; z-index: 510;
     pointer-events: none;
   }
-  /* Show overlay when in CSS fallback fullscreen */
-  .vc-pinned--fullscreen .vc-fullscreen-overlay { display: block; }
-  /* Always show overlay when document is in true fullscreen */
+  /* Show overlay when pinned fullscreen is active */
+  .vc-root--pinned-fs .vc-fullscreen-overlay { display: block; }
+  /* Also show when document is in native fullscreen */
   :fullscreen .vc-fullscreen-overlay,
   :-webkit-full-screen .vc-fullscreen-overlay { display: block; }
 
@@ -713,22 +738,24 @@ function CtrlBtn({ onClick, variant = "normal", title, icon, badge }) {
 }
 
 // ── Fullscreen helpers ────────────────────────────────────────────────────────
-// FIX B: Use the Fullscreen API for true fullscreen on mobile.
-// Falls back to CSS fixed-position overlay if Fullscreen API is unavailable.
-async function requestTrueFullscreen(el) {
+// Strategy: call requestFullscreen on document.documentElement (the whole page).
+// Then use CSS class .vc-root--pinned-fs on the root to make the pinned tile
+// cover 100vw × 100vh via position:fixed. Calling requestFullscreen on a child
+// div is unreliable on Android — the child gets fullscreen viewport dims but its
+// children still lay out at pre-fullscreen sizes (the zoom/crop bug seen in pic 1).
+async function requestTrueFullscreen() {
   try {
-    if (!el) return false;
-    if (el.requestFullscreen) {
-      await el.requestFullscreen({ navigationUI: "hide" });
-    } else if (el.webkitRequestFullscreen) {
-      await el.webkitRequestFullscreen();
+    const docEl = document.documentElement;
+    if (docEl.requestFullscreen) {
+      await docEl.requestFullscreen({ navigationUI: "hide" });
+    } else if (docEl.webkitRequestFullscreen) {
+      await docEl.webkitRequestFullscreen();
     } else {
-      return false; // API not available, use CSS fallback
+      return false;
     }
-    // Try locking to landscape (works on installed PWAs, some Android browsers)
     try {
       if (screen.orientation?.lock) await screen.orientation.lock("landscape");
-    } catch (_) { /* non-fatal */ }
+    } catch (_) {}
     return true;
   } catch (e) {
     console.warn("requestFullscreen failed:", e);
@@ -806,6 +833,8 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
   // FIX B: track whether we're in CSS-fallback fullscreen (Fullscreen API unavailable)
   const [cssFallbackFullscreen, setCssFallbackFullscreen] = useState(false);
+  // Track whether native Fullscreen API is active (to apply .vc-root--pinned-fs)
+  const [nativeFullscreen, setNativeFullscreen]           = useState(false);
 
   // System audio
   const [hasSystemAudio, setHasSystemAudio] = useState(false);
@@ -822,22 +851,22 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const screenTrackRef  = useRef(null);
   const screenStreamRef = useRef(null);
   const displayNameRef  = useRef("");
-  const pinnedWrapRef   = useRef(null); // FIX B: ref to the pinned tile wrapper for requestFullscreen
   useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
 
-  // ── FIX B: pin → fullscreen, unpin → exit fullscreen ──────────────────────
+  // ── FIX B: pin → fullscreen via documentElement + CSS class ───────────────
+  // We request fullscreen on document.documentElement (the whole page), then
+  // use the CSS class .vc-root--pinned-fs to position:fixed the pinned tile to
+  // fill 100vw×100vh. This avoids the Android "child gets fullscreen viewport
+  // but its children still use old layout" zoom/crop bug.
   async function pinTile(id) {
     setPinnedId(id);
-    // Wait for the DOM to update so the pinned wrapper is rendered
+    // Wait two frames for React to render the pinned tile
     await new Promise(r => requestAnimationFrame(r));
     await new Promise(r => requestAnimationFrame(r));
 
-    const el = pinnedWrapRef.current;
-    if (!el) return;
-
-    const ok = await requestTrueFullscreen(el);
+    const ok = await requestTrueFullscreen();
     if (!ok) {
-      // Fullscreen API not available — use CSS fallback
+      // Fullscreen API blocked (non-HTTPS, iframe, etc.) — CSS fallback
       setCssFallbackFullscreen(true);
       showToast("📌 Pinned fullscreen (tap ✕ to exit)", 2500);
     } else {
@@ -854,8 +883,10 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   // Listen for native fullscreen exit (e.g. user presses back on Android)
   useEffect(() => {
     function onFsChange() {
-      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-        // User exited fullscreen natively
+      const active = !!(document.fullscreenElement || document.webkitFullscreenElement);
+      setNativeFullscreen(active);
+      if (!active) {
+        // User exited fullscreen natively (back button, Esc, etc.)
         setPinnedId(null);
         setCssFallbackFullscreen(false);
         try { screen.orientation?.unlock?.(); } catch (_) {}
@@ -1393,8 +1424,10 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const totalCount    = 1 + remotePeerIds.length;
   const hasVideo      = mediaStatus === "ok";
 
-  // FIX B: The pinned wrapper gets the CSS fallback class when Fullscreen API failed
-  const pinnedWrapClass = `vc-pinned-wrap${cssFallbackFullscreen ? " vc-pinned--fullscreen" : ""}`;
+  // Apply .vc-root--pinned-fs when: native fullscreen active OR CSS fallback active
+  const isPinnedFs = (nativeFullscreen || cssFallbackFullscreen) && !!pinnedId;
+  const rootClass = `vc-root${isPinnedFs ? " vc-root--pinned-fs" : ""}`;
+  const pinnedWrapClass = "vc-pinned-wrap"; // no longer needs per-instance class
 
   function renderPinnedTile() {
     if (!pinnedId) return null;
@@ -1404,7 +1437,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
       </div>
     );
 
-    // Fullscreen overlay — shown in both true fullscreen and CSS fallback
+    // Overlay — always rendered; CSS controls visibility via .vc-root--pinned-fs
     const overlay = (
       <div className="vc-fullscreen-overlay">
         <button className="vc-fullscreen-unpin" onClick={unpinTile}>✕ Unpin / Exit Fullscreen</button>
@@ -1416,9 +1449,8 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
     if (pinnedId === "screen" && sharing && screenStream) {
       return (
-        <div className={pinnedWrapClass} ref={pinnedWrapRef}>
-          {!cssFallbackFullscreen && header}
-          {/* FIX A: use screenPreviewStream (video-only) for tile display */}
+        <div className={pinnedWrapClass}>
+          {header}
           <VideoTile
             stream={screenStream}
             previewStream={screenPreviewStream}
@@ -1431,8 +1463,8 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     }
     if (pinnedId === "local") {
       return (
-        <div className={pinnedWrapClass} ref={pinnedWrapRef}>
-          {!cssFallbackFullscreen && header}
+        <div className={pinnedWrapClass}>
+          {header}
           <VideoTile stream={localStream} name={displayName} isLocal micOn={micOn} videoOn={camOn}
             isPinned onUnpin={unpinTile} />
           {overlay}
@@ -1441,8 +1473,8 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     }
     if (remoteStreams[pinnedId]) {
       return (
-        <div className={pinnedWrapClass} ref={pinnedWrapRef}>
-          {!cssFallbackFullscreen && header}
+        <div className={pinnedWrapClass}>
+          {header}
           <VideoTile stream={remoteStreams[pinnedId]} name={remoteNames[pinnedId] || pinnedId}
             micOn videoOn isPinned onUnpin={unpinTile} />
           {overlay}
