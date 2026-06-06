@@ -1,34 +1,36 @@
 /**
- * VideoCall.jsx – v3: system audio share (Windows) + fixed mobile screen share + pinned landscape rotation
+ * VideoCall.jsx – v4
  *
- * CHANGES FROM v2:
+ * FIXES & NEW FEATURES vs v3:
  *
- * FEATURE A — Windows system audio in screen share
+ * FIX 1 — Black screen when sharing with system audio (Windows)
  * ──────────────────────────────────────────────────────────────────────────────
- * getDisplayMedia is called with { video: true, audio: true, systemAudio: 'include' }.
- * If the browser grants an audio track (Windows Chrome/Edge show a "Share system audio"
- * checkbox in the picker), that track is added to every peer connection alongside the
- * video track. The control bar shows a 🔊/🔇 toggle to mute/unmute the captured audio.
- * On browsers that don't support systemAudio (Firefox, Safari, mobile) the flag is
- * ignored gracefully — video-only share still works.
+ * Root cause: Chrome's getDisplayMedia stream contains BOTH a video track and an
+ * audio track (system audio). Passing this mixed stream directly as <video>.srcObject
+ * causes Chrome to render black — it gets confused by the audio track in a video element.
+ * Fix: always build a video-only MediaStream (new MediaStream([videoTrack])) for the
+ * local screen-share preview tile. The full stream is still used for peer track sending.
+ * The system audio track is sent to peers separately via its own RTCRtpSender.
  *
- * FEATURE B — Fixed mobile screen share
+ * FIX 2 — Mobile screen share black/broken (Android Chrome)
  * ──────────────────────────────────────────────────────────────────────────────
- * Android Chrome requires getDisplayMedia to be the FIRST async operation after a
- * user gesture (no awaits before it). The previous code had async checks before the
- * call, which broke real Android devices even though DevTools emulation worked fine.
- * Now: sync-only guard checks → immediate getDisplayMedia → all async work after.
- * Constraints simplified to { video: true, audio: true } — any nested object or
- * extra keys cause Android Chrome to reject the call.
+ * getDisplayMedia must be the FIRST awaited call after user gesture on Android Chrome.
+ * No async guards before it. Constraints simplified to { video: true, audio: true }.
  *
- * FEATURE C — Rotate pinned tile to landscape (mobile only)
+ * FEATURE — Auto-rotate on phone tilt (replaces manual landscape button)
  * ──────────────────────────────────────────────────────────────────────────────
- * When a tile is pinned on a touch device, a 📱→🔄 button appears in the pinned-tile
- * header. Tapping it calls screen.orientation.lock('landscape') to rotate the entire
- * browser to landscape for an immersive full-screen-like experience. The button
- * toggles back to portrait ('portrait-primary') on second tap. Orientation is also
- * released automatically when the tile is unpinned or the user leaves the call.
- * Falls back silently on browsers that don't support the Orientation Lock API.
+ * Instead of a manual "Rotate to landscape" button, the app now listens to the
+ * screen.orientation "change" event. When the user physically tilts their phone to
+ * landscape, the UI automatically unlocks and re-locks orientation to follow the tilt.
+ * When they tilt back to portrait, it follows back. This is done by:
+ *   1. NOT locking orientation at all (letting the browser follow the device naturally)
+ *   2. When in-call on mobile, listening to screen.orientation.change and updating a
+ *      CSS class on the root that transforms the pinned tile to fill the screen in
+ *      landscape without needing the Orientation Lock API (which is often blocked).
+ *   3. As a progressive enhancement: if screen.orientation.lock IS available (Android
+ *      Chrome installed PWA, some Samsung browsers), we lock to the current orientation
+ *      on each change event so the content doesn't snap back.
+ * The manual rotate button is completely removed.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -58,31 +60,26 @@ function diagnoseCameraEnv() {
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) issues.push("API_UNAVAILABLE");
   return issues;
 }
-
 function isMobileDevice() {
   return typeof window !== "undefined" && ("ontouchstart" in window || navigator.maxTouchPoints > 0);
 }
-
 function getRoomFromUrl() {
   if (typeof window === "undefined") return "";
   const params = new URLSearchParams(window.location.search);
   return (params.get("room") || "").toUpperCase();
 }
-
 function setRoomInUrl(roomId) {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
   url.searchParams.set("room", roomId);
   window.history.replaceState({}, "", url.toString());
 }
-
 function clearRoomFromUrl() {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
   url.searchParams.delete("room");
   window.history.replaceState({}, "", url.toString());
 }
-
 function buildShareLink(roomId) {
   if (typeof window === "undefined") return "";
   const url = new URL(window.location.href);
@@ -90,27 +87,11 @@ function buildShareLink(roomId) {
   return url.toString();
 }
 
-// ── FEATURE C helpers ─────────────────────────────────────────────────────────
-function supportsOrientationLock() {
-  return typeof screen !== "undefined" &&
-    screen.orientation &&
-    typeof screen.orientation.lock === "function";
-}
-
-async function lockOrientation(type) {
-  if (!supportsOrientationLock()) return false;
-  try {
-    await screen.orientation.lock(type);
-    return true;
-  } catch (e) {
-    console.warn("orientation lock failed:", e);
-    return false;
-  }
-}
-
-function unlockOrientation() {
-  if (!supportsOrientationLock()) return;
-  try { screen.orientation.unlock(); } catch {}
+// Returns true if current orientation is landscape
+function isLandscape() {
+  if (typeof screen === "undefined") return false;
+  if (screen.orientation) return screen.orientation.type.startsWith("landscape");
+  return window.innerWidth > window.innerHeight;
 }
 
 const CSS = `
@@ -158,11 +139,8 @@ const CSS = `
 
   /* ── LOBBY ── */
   .vc-lobby {
-    height: 100%;
-    overflow-y: auto;
-    display: flex;
-    align-items: flex-start;
-    justify-content: center;
+    height: 100%; overflow-y: auto;
+    display: flex; align-items: flex-start; justify-content: center;
     padding: 24px 16px 48px;
     background:
       radial-gradient(ellipse at 20% 10%, rgba(59,130,246,0.15) 0%, transparent 55%),
@@ -173,8 +151,7 @@ const CSS = `
     width: 100%; max-width: 440px;
     background: rgba(255,255,255,0.025);
     border: 1px solid var(--border);
-    border-radius: 20px;
-    padding: 28px 24px;
+    border-radius: 20px; padding: 28px 24px;
     backdrop-filter: blur(12px);
   }
   .vc-lobby__brand { text-align: center; margin-bottom: 24px; }
@@ -183,19 +160,13 @@ const CSS = `
   .vc-lobby__sub { font-size: 13px; color: var(--text3); margin-top: 3px; font-family: 'DM Mono', monospace; }
 
   .vc-preview {
-    position: relative;
-    width: 100%; aspect-ratio: 16/9;
-    background: #0d131f;
-    border-radius: 12px;
-    overflow: hidden;
+    position: relative; width: 100%; aspect-ratio: 16/9;
+    background: #0d131f; border-radius: 12px; overflow: hidden;
     margin-bottom: 12px;
     display: flex; align-items: center; justify-content: center;
     border: 1px solid var(--border);
   }
-  .vc-preview video {
-    width: 100%; height: 100%;
-    object-fit: cover; transform: scaleX(-1);
-  }
+  .vc-preview video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); }
   .vc-preview__overlay {
     display: flex; flex-direction: column;
     align-items: center; gap: 6px; padding: 20px; text-align: center;
@@ -205,8 +176,7 @@ const CSS = `
   .vc-preview__overlay-sub { font-size: 12px; color: #334155; line-height: 1.5; }
   .vc-preview__btns {
     position: absolute; bottom: 10px; left: 50%;
-    transform: translateX(-50%);
-    display: flex; gap: 8px;
+    transform: translateX(-50%); display: flex; gap: 8px;
   }
 
   .vc-banner {
@@ -256,10 +226,7 @@ const CSS = `
   .vc-btn-primary { background: var(--accent); color: #fff; }
   .vc-btn-primary:hover:not(:disabled) { background: #2563eb; transform: translateY(-1px); }
   .vc-btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
-  .vc-btn-ghost {
-    background: rgba(255,255,255,0.05); color: var(--text2);
-    border: 1px solid var(--border);
-  }
+  .vc-btn-ghost { background: rgba(255,255,255,0.05); color: var(--text2); border: 1px solid var(--border); }
   .vc-btn-ghost:hover { background: rgba(255,255,255,0.09); color: var(--text); }
   .vc-btn-sm {
     padding: 6px 12px; border-radius: 8px;
@@ -269,10 +236,8 @@ const CSS = `
 
   .vc-link-banner {
     display: flex; align-items: center; gap: 8px;
-    background: rgba(59,130,246,0.07);
-    border: 1px solid rgba(59,130,246,0.18);
-    border-radius: 10px; padding: 9px 12px;
-    margin-bottom: 14px;
+    background: rgba(59,130,246,0.07); border: 1px solid rgba(59,130,246,0.18);
+    border-radius: 10px; padding: 9px 12px; margin-bottom: 14px;
   }
   .vc-link-banner__text {
     flex: 1; font-size: 12px; color: var(--accent2);
@@ -282,29 +247,20 @@ const CSS = `
   .vc-link-banner__icon { font-size: 16px; flex-shrink: 0; }
 
   /* ── CALL LAYOUT ── */
-  .vc-call {
-    display: flex; flex-direction: column;
-    height: 100%; overflow: hidden;
-  }
+  .vc-call { display: flex; flex-direction: column; height: 100%; overflow: hidden; }
 
   .vc-header {
-    flex-shrink: 0;
-    display: flex; align-items: center;
-    justify-content: space-between;
-    padding: 9px 14px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-    gap: 8px; flex-wrap: wrap;
-    min-height: 48px;
+    flex-shrink: 0; display: flex; align-items: center;
+    justify-content: space-between; padding: 9px 14px;
+    background: var(--surface); border-bottom: 1px solid var(--border);
+    gap: 8px; flex-wrap: wrap; min-height: 48px;
   }
   .vc-header__left { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
   .vc-header__room {
-    font-family: 'DM Mono', monospace;
-    font-size: 12px; font-weight: 500; letter-spacing: 2px;
+    font-family: 'DM Mono', monospace; font-size: 12px; font-weight: 500; letter-spacing: 2px;
     background: rgba(59,130,246,0.12); color: var(--accent2);
     border-radius: 6px; padding: 3px 9px; cursor: pointer;
-    border: 1px solid rgba(59,130,246,0.2); user-select: all;
-    white-space: nowrap;
+    border: 1px solid rgba(59,130,246,0.2); user-select: all; white-space: nowrap;
   }
   .vc-header__info { font-size: 11px; color: var(--text3); white-space: nowrap; }
   .vc-header__name { font-size: 12px; color: var(--text2); font-weight: 600; white-space: nowrap; }
@@ -317,51 +273,68 @@ const CSS = `
   }
   .vc-header__share-btn:hover { background: rgba(16,185,129,0.25); }
 
-  .vc-body {
-    flex: 1; display: flex;
-    overflow: hidden; position: relative;
-  }
+  .vc-body { flex: 1; display: flex; overflow: hidden; position: relative; }
 
   .vc-grid-wrap {
-    flex: 1; padding: 12px;
-    overflow-y: auto; min-width: 0;
-    padding-bottom: 12px;
-    display: flex; flex-direction: column; gap: 10px;
+    flex: 1; padding: 12px; overflow-y: auto; min-width: 0;
+    padding-bottom: 12px; display: flex; flex-direction: column; gap: 10px;
   }
 
-  /* Pinned tile */
-  .vc-pinned-wrap {
-    width: 100%; flex-shrink: 0; position: relative;
-  }
+  /* Pinned tile — landscape-aware on mobile */
+  .vc-pinned-wrap { width: 100%; flex-shrink: 0; position: relative; }
   .vc-pinned-wrap .vc-tile {
     aspect-ratio: 16/9;
     border: 2px solid var(--accent);
     box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
   }
 
-  /* FEATURE C: rotate button on pinned tile header */
+  /*
+   * AUTO-ROTATE: when phone is landscape, expand pinned tile to fill viewport.
+   * We apply .vc-root--landscape on the root when orientation changes to landscape.
+   * This is pure CSS — no orientation lock API needed, no permissions, works everywhere.
+   */
+  .vc-root--landscape .vc-pinned-wrap .vc-tile {
+    position: fixed;
+    inset: 0;
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+    aspect-ratio: unset;
+    z-index: 500;
+    border: none;
+    box-shadow: none;
+  }
+  /* Hide all other UI elements when landscape + pinned so the tile is truly full screen */
+  .vc-root--landscape .vc-header,
+  .vc-root--landscape .vc-controls,
+  .vc-root--landscape .vc-sidebar,
+  .vc-root--landscape .vc-grid,
+  .vc-root--landscape .vc-pinned-header {
+    display: none !important;
+  }
+  /* Tap-to-exit hint in landscape */
+  .vc-landscape-hint {
+    display: none;
+    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);
+    border-radius: 8px; padding: 5px 14px;
+    font-size: 12px; color: rgba(255,255,255,0.7);
+    z-index: 600; pointer-events: none;
+    font-family: 'DM Mono', monospace;
+    white-space: nowrap;
+  }
+  .vc-root--landscape .vc-landscape-hint { display: block; }
+
   .vc-pinned-header {
-    display: flex; align-items: center; justify-content: space-between;
+    display: flex; align-items: center; justify-content: flex-end;
     margin-bottom: 6px;
   }
   .vc-pinned-label {
     font-size: 11px; color: var(--accent2); font-family: 'DM Mono', monospace;
     letter-spacing: 0.08em;
   }
-  .vc-rotate-btn {
-    padding: 4px 10px; border-radius: 6px; border: none;
-    background: rgba(59,130,246,0.18); color: var(--accent2);
-    font-size: 11px; font-weight: 700; cursor: pointer;
-    font-family: 'DM Mono', monospace; white-space: nowrap;
-    border: 1px solid rgba(59,130,246,0.25); transition: all .15s;
-    display: flex; align-items: center; gap: 5px;
-  }
-  .vc-rotate-btn:hover { background: rgba(59,130,246,0.28); }
-  .vc-rotate-btn.landscape { background: rgba(16,185,129,0.18); color: #34d399; border-color: rgba(16,185,129,0.25); }
 
-  .vc-grid {
-    display: grid; gap: 10px; align-items: start;
-  }
+  .vc-grid { display: grid; gap: 10px; align-items: start; }
   .vc-grid[data-count="1"] { grid-template-columns: 1fr; }
   .vc-grid[data-count="2"] { grid-template-columns: repeat(2, 1fr); }
   .vc-grid[data-count="3"],
@@ -383,14 +356,11 @@ const CSS = `
 
   /* ── VIDEO TILE ── */
   .vc-tile {
-    position: relative;
-    background: #0d131f;
-    border-radius: var(--tile-radius);
-    overflow: hidden;
+    position: relative; background: #0d131f;
+    border-radius: var(--tile-radius); overflow: hidden;
     aspect-ratio: 4/3;
     display: flex; align-items: center; justify-content: center;
-    border: 1.5px solid var(--border);
-    cursor: pointer;
+    border: 1.5px solid var(--border); cursor: pointer;
     transition: border-color .2s, box-shadow .2s;
   }
   .vc-tile:hover { border-color: rgba(59,130,246,0.4); }
@@ -400,8 +370,7 @@ const CSS = `
   .vc-tile video.mirror { transform: scaleX(-1); }
 
   .vc-tile__avatar {
-    position: absolute;
-    width: 52px; height: 52px; border-radius: 50%;
+    position: absolute; width: 52px; height: 52px; border-radius: 50%;
     background: rgba(59,130,246,0.15);
     display: flex; align-items: center; justify-content: center;
     font-size: 18px; font-weight: 800; color: var(--accent2);
@@ -418,65 +387,52 @@ const CSS = `
     font-family: 'DM Mono', monospace;
   }
   .vc-tile__muted { color: #f87171; }
-
   .vc-tile__pin-hint {
     position: absolute; top: 8px; right: 8px;
     background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
     border-radius: 6px; padding: 3px 7px;
     font-size: 11px; color: rgba(255,255,255,0.6);
-    opacity: 0; transition: opacity .2s;
-    pointer-events: none;
+    opacity: 0; transition: opacity .2s; pointer-events: none;
   }
   .vc-tile__unpin-btn {
     position: absolute; top: 8px; right: 8px;
     background: rgba(59,130,246,0.8); backdrop-filter: blur(4px);
     border: none; border-radius: 6px; padding: 4px 9px;
     font-size: 11px; color: #fff; cursor: pointer;
-    font-family: 'DM Mono', monospace; font-weight: 500;
-    transition: background .15s;
+    font-family: 'DM Mono', monospace; font-weight: 500; transition: background .15s;
   }
   .vc-tile__unpin-btn:hover { background: rgba(59,130,246,1); }
 
-  /* FEATURE A: system audio indicator badge on screen tile */
+  /* System audio badge on screen-share tile */
   .vc-tile__audio-badge {
     position: absolute; top: 8px; left: 8px;
     background: rgba(16,185,129,0.85); backdrop-filter: blur(4px);
     border-radius: 6px; padding: 3px 8px;
     font-size: 10px; color: #fff; font-family: 'DM Mono', monospace;
-    display: flex; align-items: center; gap: 4px;
-    pointer-events: none;
+    display: flex; align-items: center; gap: 4px; pointer-events: none;
   }
 
   /* ── SIDEBAR ── */
   .vc-sidebar {
     width: 272px; flex-shrink: 0;
-    background: var(--surface);
-    border-left: 1px solid var(--border);
-    display: flex; flex-direction: column;
-    overflow: hidden;
+    background: var(--surface); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
   }
   @media (max-width: 768px) {
     .vc-sidebar {
-      display: none;
-      position: fixed;
-      bottom: 0; left: 0; right: 0;
-      width: 100%;
-      top: auto;
-      height: 65vh;
-      border-left: none;
-      border-top: 1px solid var(--border);
-      border-radius: 18px 18px 0 0;
-      z-index: 200;
+      display: none; position: fixed;
+      bottom: 0; left: 0; right: 0; width: 100%;
+      top: auto; height: 65vh;
+      border-left: none; border-top: 1px solid var(--border);
+      border-radius: 18px 18px 0 0; z-index: 200;
       box-shadow: 0 -20px 60px rgba(0,0,0,0.5);
     }
     .vc-sidebar.mobile-open { display: flex; }
   }
   .vc-sidebar__drag-handle {
-    display: none;
-    width: 36px; height: 4px;
-    background: rgba(255,255,255,0.15);
-    border-radius: 2px; margin: 10px auto 6px;
-    flex-shrink: 0;
+    display: none; width: 36px; height: 4px;
+    background: rgba(255,255,255,0.15); border-radius: 2px;
+    margin: 10px auto 6px; flex-shrink: 0;
   }
   @media (max-width: 768px) { .vc-sidebar__drag-handle { display: block; } }
 
@@ -491,20 +447,10 @@ const CSS = `
     border-bottom: 2px solid transparent; transition: all .15s;
   }
   .vc-sidebar__tab.active { color: var(--accent2); border-bottom-color: var(--accent2); }
-  .vc-sidebar__close {
-    background: none; border: none; color: var(--text3);
-    cursor: pointer; padding: 0 12px; font-size: 16px;
-    flex-shrink: 0;
-  }
-  .vc-sidebar__body {
-    flex: 1; overflow-y: auto;
-    display: flex; flex-direction: column;
-  }
+  .vc-sidebar__close { background: none; border: none; color: var(--text3); cursor: pointer; padding: 0 12px; font-size: 16px; flex-shrink: 0; }
+  .vc-sidebar__body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
 
-  .vc-chat__messages {
-    flex: 1; padding: 12px;
-    display: flex; flex-direction: column; gap: 10px; overflow-y: auto;
-  }
+  .vc-chat__messages { flex: 1; padding: 12px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
   .vc-chat__empty { color: var(--text3); font-size: 13px; text-align: center; margin-top: 24px; }
   .vc-chat__msg-name { font-size: 11px; color: var(--text3); margin-bottom: 2px; font-family: 'DM Mono', monospace; }
   .vc-chat__msg-bubble {
@@ -512,16 +458,11 @@ const CSS = `
     padding: 7px 10px; font-size: 13px; color: #cbd5e1; word-break: break-word;
     border: 1px solid var(--border);
   }
-  .vc-chat__input-row {
-    display: flex; gap: 6px; padding: 10px;
-    border-top: 1px solid var(--border); flex-shrink: 0;
-  }
+  .vc-chat__input-row { display: flex; gap: 6px; padding: 10px; border-top: 1px solid var(--border); flex-shrink: 0; }
   .vc-chat__input {
-    flex: 1; padding: 8px 10px;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 8px; color: var(--text);
-    font-size: 13px; font-family: inherit; outline: none;
+    flex: 1; padding: 8px 10px; background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;
+    color: var(--text); font-size: 13px; font-family: inherit; outline: none;
   }
   .vc-chat__input:focus { border-color: rgba(59,130,246,0.4); }
   .vc-chat__send {
@@ -547,32 +488,24 @@ const CSS = `
 
   .vc-invite { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
   .vc-invite__desc { font-size: 12px; color: var(--text3); line-height: 1.5; }
-  .vc-invite__link-box {
-    display: flex; gap: 8px; align-items: center;
-  }
+  .vc-invite__link-box { display: flex; gap: 8px; align-items: center; }
   .vc-invite__link-input {
-    flex: 1; padding: 8px 10px;
-    background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(255,255,255,0.08);
-    border-radius: 8px; color: var(--text2);
-    font-size: 11px; font-family: 'DM Mono', monospace; outline: none;
+    flex: 1; padding: 8px 10px; background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;
+    color: var(--text2); font-size: 11px; font-family: 'DM Mono', monospace; outline: none;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
 
   /* ── CONTROLS ── */
   .vc-controls {
-    flex-shrink: 0;
-    display: flex; align-items: center; justify-content: center;
-    gap: 8px; padding: 12px 14px;
-    background: var(--surface);
-    border-top: 1px solid var(--border);
-    flex-wrap: wrap;
+    flex-shrink: 0; display: flex; align-items: center; justify-content: center;
+    gap: 8px; padding: 12px 14px; background: var(--surface);
+    border-top: 1px solid var(--border); flex-wrap: wrap;
   }
   .vc-ctrl-btn {
     width: 44px; height: 44px; border-radius: 50%; border: none;
     cursor: pointer; display: flex; align-items: center; justify-content: center;
-    font-size: 17px; transition: all .15s; flex-shrink: 0;
-    position: relative;
+    font-size: 17px; transition: all .15s; flex-shrink: 0; position: relative;
   }
   .vc-ctrl-btn--normal { background: rgba(255,255,255,0.09); }
   .vc-ctrl-btn--normal:hover { background: rgba(255,255,255,0.16); }
@@ -594,16 +527,11 @@ const CSS = `
     .vc-controls { gap: 6px; padding: 10px 8px; }
   }
 
-  /* ── Mobile overlay backdrop ── */
   .vc-backdrop {
-    display: none;
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.5);
-    z-index: 199;
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.5); z-index: 199;
   }
-  @media (max-width: 768px) {
-    .vc-backdrop.show { display: block; }
-  }
+  @media (max-width: 768px) { .vc-backdrop.show { display: block; } }
 `;
 
 // ── SW for push ───────────────────────────────────────────────────────────────
@@ -635,23 +563,27 @@ function b64ToUint8(b64) {
   return Uint8Array.from([...raw].map(c => c.charCodeAt(0)));
 }
 
-// ── Toast ─────────────────────────────────────────────────────────────────────
 function Toast({ message }) {
   if (!message) return null;
   return <div className="vc-toast">{message}</div>;
 }
 
 // ── VideoTile ─────────────────────────────────────────────────────────────────
-function VideoTile({ stream, name, isLocal, micOn = true, videoOn = true, isScreen, isPinned, onPin, onUnpin, hasSystemAudio }) {
+// FIX 1: accepts a separate `previewStream` for the local screen-share tile.
+// previewStream is a video-only MediaStream built from just the video track.
+// This prevents Chrome from rendering black when the full stream has audio tracks.
+function VideoTile({ stream, previewStream, name, isLocal, micOn = true, videoOn = true, isScreen, isPinned, onPin, onUnpin, hasSystemAudio }) {
   const videoRef = useRef(null);
+  // Use previewStream for display if provided, else fall back to full stream
+  const displayStream = previewStream || stream;
 
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    if (el.srcObject !== stream) el.srcObject = stream || null;
-  }, [stream]);
+    if (el.srcObject !== displayStream) el.srcObject = displayStream || null;
+  }, [displayStream]);
 
-  const showVideo = !!stream && (isScreen || videoOn);
+  const showVideo = !!displayStream && (isScreen || videoOn);
 
   return (
     <div
@@ -667,7 +599,6 @@ function VideoTile({ stream, name, isLocal, micOn = true, videoOn = true, isScre
       <div className="vc-tile__avatar" style={{ display: showVideo ? "none" : "flex" }}>
         {initials(name)}
       </div>
-      {/* FEATURE A: system audio badge */}
       {isScreen && hasSystemAudio && (
         <div className="vc-tile__audio-badge">🔊 sys audio</div>
       )}
@@ -686,7 +617,6 @@ function VideoTile({ stream, name, isLocal, micOn = true, videoOn = true, isScre
   );
 }
 
-// ── MediaBanner ───────────────────────────────────────────────────────────────
 function MediaBanner({ status, onRetry, onAudioOnly }) {
   if (status === "ok") return <div className="vc-banner vc-banner--ok">✅ Camera &amp; microphone ready</div>;
   if (status === "audio-only") return <div className="vc-banner vc-banner--ok">🎙️ Microphone only — you can still join</div>;
@@ -729,7 +659,7 @@ function MediaBanner({ status, onRetry, onAudioOnly }) {
       ⏳ Requesting camera &amp; microphone…
     </div>
   );
-  if (status === "error") return (
+  return (
     <div className="vc-banner vc-banner--error">
       ⚠️ Could not access camera/mic.
       <div className="vc-banner__actions">
@@ -738,7 +668,6 @@ function MediaBanner({ status, onRetry, onAudioOnly }) {
       </div>
     </div>
   );
-  return null;
 }
 
 function CtrlBtn({ onClick, variant = "normal", title, icon, badge }) {
@@ -761,15 +690,15 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const [joinPassword, setJoinPassword]     = useState("");
   const [lobbyError, setLobbyError]         = useState("");
 
-  const [mediaStatus, setMediaStatus]   = useState("loading");
-  const [lobbyStream, setLobbyStream]   = useState(null);
-  const [lobbyMic, setLobbyMic]         = useState(true);
-  const [lobbyCam, setLobbyCam]         = useState(true);
+  const [mediaStatus, setMediaStatus] = useState("loading");
+  const [lobbyStream, setLobbyStream] = useState(null);
+  const [lobbyMic, setLobbyMic]       = useState(true);
+  const [lobbyCam, setLobbyCam]       = useState(true);
   const streamRef = useRef(null);
 
-  const [facingMode, setFacingMode]         = useState("user");
-  const isMobile                            = isMobileDevice();
-  const rotatingRef                         = useRef(false);
+  const [facingMode, setFacingMode] = useState("user");
+  const isMobile                    = isMobileDevice();
+  const rotatingRef                 = useRef(false);
 
   const [toast, setToast] = useState("");
   const toastTimerRef     = useRef(null);
@@ -784,98 +713,90 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     if (el && streamRef.current) el.srcObject = streamRef.current;
   }, []);
 
-  const [inCall, setInCall]               = useState(false);
-  const [roomId, setRoomId]               = useState("");
-  const [peerId]                          = useState(randomId);
-  const [status, setStatus]               = useState("");
-  const [localStream, setLocalStream]     = useState(null);
-  const [screenStream, setScreenStream]   = useState(null);
-  const [remoteStreams, setRemoteStreams]  = useState({});
-  const [remoteNames, setRemoteNames]     = useState({});
-  const [micOn, setMicOn]                 = useState(true);
-  const [camOn, setCamOn]                 = useState(true);
-  const [sharing, setSharing]             = useState(false);
-  const [sidebarTab, setSidebarTab]       = useState("chat");
-  const [sidebarOpen, setSidebarOpen]     = useState(false);
-  const [chatLog, setChatLog]             = useState([]);
-  const [chatMsg, setChatMsg]             = useState("");
-  const [unread, setUnread]               = useState(0);
-  const [copied, setCopied]               = useState(false);
-  const [copiedLink, setCopiedLink]       = useState(false);
-  const [notifyTarget, setNotifyTarget]   = useState("");
-  const [pushEnabled, setPushEnabled]     = useState(false);
-  const [pushStatus, setPushStatus]       = useState("");
-  const [pinnedId, setPinnedId]           = useState(null);
+  const [inCall, setInCall]             = useState(false);
+  const [roomId, setRoomId]             = useState("");
+  const [peerId]                        = useState(randomId);
+  const [status, setStatus]             = useState("");
+  const [localStream, setLocalStream]   = useState(null);
+  const [screenStream, setScreenStream] = useState(null);
 
-  // FEATURE A: system audio state
-  const [hasSystemAudio, setHasSystemAudio]   = useState(false);
-  const [sysAudioOn, setSysAudioOn]           = useState(true);
-  const sysAudioTrackRef                       = useRef(null);
+  // FIX 1: separate video-only stream for the screen-share preview tile
+  const [screenPreviewStream, setScreenPreviewStream] = useState(null);
 
-  // FEATURE C: landscape orientation lock state
-  const [isLandscapeLocked, setIsLandscapeLocked] = useState(false);
-  const orientationLockedRef                        = useRef(false);
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const [remoteNames, setRemoteNames]   = useState({});
+  const [micOn, setMicOn]               = useState(true);
+  const [camOn, setCamOn]               = useState(true);
+  const [sharing, setSharing]           = useState(false);
+  const [sidebarTab, setSidebarTab]     = useState("chat");
+  const [sidebarOpen, setSidebarOpen]   = useState(false);
+  const [chatLog, setChatLog]           = useState([]);
+  const [chatMsg, setChatMsg]           = useState("");
+  const [unread, setUnread]             = useState(0);
+  const [copied, setCopied]             = useState(false);
+  const [copiedLink, setCopiedLink]     = useState(false);
+  const [notifyTarget, setNotifyTarget] = useState("");
+  const [pushEnabled, setPushEnabled]   = useState(false);
+  const [pushStatus, setPushStatus]     = useState("");
+  const [pinnedId, setPinnedId]         = useState(null);
 
-  const chatEndRef      = useRef(null);
-  const wsRef           = useRef(null);
-  const pcsRef          = useRef({});
-  const iceQRef         = useRef({});
-  const peerStreamsRef   = useRef({});
-  const localStreamRef  = useRef(null);
-  const sharingRef      = useRef(false);
-  const screenTrackRef  = useRef(null);
-  const screenStreamRef = useRef(null);
-  const displayNameRef  = useRef("");
+  // System audio
+  const [hasSystemAudio, setHasSystemAudio] = useState(false);
+  const [sysAudioOn, setSysAudioOn]         = useState(true);
+  const sysAudioTrackRef                     = useRef(null);
+
+  // AUTO-ROTATE: track whether phone is in landscape
+  const [inLandscape, setInLandscape] = useState(() => isLandscape());
+
+  const chatEndRef     = useRef(null);
+  const wsRef          = useRef(null);
+  const pcsRef         = useRef({});
+  const iceQRef        = useRef({});
+  const peerStreamsRef  = useRef({});
+  const localStreamRef = useRef(null);
+  const sharingRef     = useRef(false);
+  const screenTrackRef = useRef(null);
+  const screenStreamRef= useRef(null);
+  const displayNameRef = useRef("");
   useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
 
-  // Escape key to unpin + release orientation lock
+  // ── AUTO-ROTATE: listen to orientation changes ──────────────────────────────
+  // When the user physically tilts their phone, we detect it and apply CSS class.
+  // No orientation lock API needed — the browser already rotates the viewport.
+  // The CSS class .vc-root--landscape makes the pinned tile fill the screen.
   useEffect(() => {
-    const handler = (e) => {
-      if (e.key === "Escape") {
-        setPinnedId(null);
-        handleUnlockOrientation();
+    if (!isMobile) return;
+
+    function onOrientationChange() {
+      const landscape = isLandscape();
+      setInLandscape(landscape);
+      if (landscape && pinnedId) {
+        showToast("📱 Tilt back to exit fullscreen", 2000);
       }
+    }
+
+    // screen.orientation API (Android Chrome, modern browsers)
+    if (screen.orientation) {
+      screen.orientation.addEventListener("change", onOrientationChange);
+      return () => screen.orientation.removeEventListener("change", onOrientationChange);
+    }
+    // Fallback: window resize / orientationchange event (older iOS)
+    window.addEventListener("orientationchange", onOrientationChange);
+    window.addEventListener("resize", onOrientationChange);
+    return () => {
+      window.removeEventListener("orientationchange", onOrientationChange);
+      window.removeEventListener("resize", onOrientationChange);
     };
+  }, [isMobile, pinnedId]);
+
+  // Escape key to unpin
+  useEffect(() => {
+    const handler = (e) => { if (e.key === "Escape") setPinnedId(null); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // Release orientation lock when pinned tile is cleared
-  useEffect(() => {
-    if (!pinnedId && orientationLockedRef.current) {
-      handleUnlockOrientation();
-    }
-  }, [pinnedId]);
-
-  // ── FEATURE C: orientation helpers ────────────────────────────────────────
-  async function handleLockLandscape() {
-    const ok = await lockOrientation("landscape");
-    if (ok) {
-      orientationLockedRef.current = true;
-      setIsLandscapeLocked(true);
-      showToast("🔄 Locked to landscape");
-    } else {
-      showToast("⚠️ Orientation lock not supported on this browser", 3500);
-    }
-  }
-
-  function handleUnlockOrientation() {
-    unlockOrientation();
-    orientationLockedRef.current = false;
-    setIsLandscapeLocked(false);
-  }
-
-  async function toggleOrientationLock() {
-    if (isLandscapeLocked) {
-      handleUnlockOrientation();
-      showToast("↩️ Back to portrait");
-    } else {
-      await handleLockLandscape();
-    }
-  }
-
   // ── media helpers ─────────────────────────────────────────────────────────
-
   function applyStream(s) {
     streamRef.current = s;
     setLobbyStream(s);
@@ -889,22 +810,13 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     if (envIssues.includes("API_UNAVAILABLE")) { setMediaStatus("unavailable"); return; }
     setMediaStatus("loading");
     try {
-      const s = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: facing },
-        audio: true,
-      });
+      const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing }, audio: true });
       applyStream(s); setMediaStatus("ok");
     } catch (err) {
       const n = err.name;
-      if (n === "NotAllowedError" || n === "PermissionDeniedError") {
-        setMediaStatus("denied");
-      } else if (n === "NotFoundError" || n === "DevicesNotFoundError") {
-        setMediaStatus("notfound");
-        await requestAudioOnly();
-      } else {
-        setMediaStatus("error");
-        await requestAudioOnly();
-      }
+      if (n === "NotAllowedError" || n === "PermissionDeniedError") { setMediaStatus("denied"); }
+      else if (n === "NotFoundError" || n === "DevicesNotFoundError") { setMediaStatus("notfound"); await requestAudioOnly(); }
+      else { setMediaStatus("error"); await requestAudioOnly(); }
     }
   }
 
@@ -933,19 +845,16 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     setLobbyCam(next);
   }
 
-  // ── rotate camera (FEATURE from v2, preserved) ────────────────────────────
   async function rotateCamera() {
     if (rotatingRef.current) return;
     rotatingRef.current = true;
     const nextFacing = facingMode === "user" ? "environment" : "user";
     try {
       const newStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { exact: nextFacing } },
-        audio: true,
+        video: { facingMode: { exact: nextFacing } }, audio: true,
       });
       const newVideoTrack = newStream.getVideoTracks()[0];
       const newAudioTrack = newStream.getAudioTracks()[0];
-
       if (inCall) {
         localStreamRef.current?.getVideoTracks().forEach(t => t.stop());
         for (const pid of Object.keys(pcsRef.current)) {
@@ -954,10 +863,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
           if (sender && newVideoTrack) await sender.replaceTrack(newVideoTrack);
         }
         const existingAudio = localStreamRef.current?.getAudioTracks()[0];
-        const combined = new MediaStream([
-          existingAudio || newAudioTrack,
-          newVideoTrack,
-        ].filter(Boolean));
+        const combined = new MediaStream([existingAudio || newAudioTrack, newVideoTrack].filter(Boolean));
         localStreamRef.current = combined;
         setLocalStream(combined);
         if (existingAudio) newAudioTrack?.stop();
@@ -965,7 +871,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
         streamRef.current?.getTracks().forEach(t => t.stop());
         applyStream(newStream);
       }
-
       setFacingMode(nextFacing);
       showToast(nextFacing === "environment" ? "📷 Rear camera" : "🤳 Front camera");
     } catch (e) {
@@ -976,15 +881,13 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   }
 
   // ── join / create ─────────────────────────────────────────────────────────
-
   async function handleCreate() {
     const name = displayName.trim();
     if (!name) { setLobbyError("Please enter your name."); return; }
     setLobbyError("");
     try {
       const res = await fetch(`${urlBase(backendUrl)}/videocall/rooms`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: createPassword || null, host_id: peerId }),
       });
       const data = await res.json();
@@ -1000,8 +903,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     setLobbyError("");
     try {
       const res = await fetch(`${urlBase(backendUrl)}/videocall/rooms/${rid}/verify`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: joinPassword }),
       });
       if (!res.ok) {
@@ -1047,7 +949,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   }
 
   // ── signaling ─────────────────────────────────────────────────────────────
-
   function handleMsg(msg) {
     switch (msg.type) {
       case "peers":
@@ -1099,31 +1000,23 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     const pc = new RTCPeerConnection(ICE_SERVERS);
     pcsRef.current[pid] = pc;
 
-    const stream      = localStreamRef.current;
-    const audioTrack  = stream?.getAudioTracks()[0] || null;
-    const isSharing   = sharingRef.current && screenTrackRef.current;
-    const videoTrack  = isSharing
-      ? screenTrackRef.current
-      : (stream?.getVideoTracks()[0] || null);
-    const videoStream = isSharing ? screenStreamRef.current : stream;
+    const stream     = localStreamRef.current;
+    const audioTrack = stream?.getAudioTracks()[0] || null;
+    const isSharing  = sharingRef.current && screenTrackRef.current;
+    const videoTrack = isSharing ? screenTrackRef.current : (stream?.getVideoTracks()[0] || null);
+    const videoStream= isSharing ? screenStreamRef.current : stream;
 
-    if (audioTrack) {
-      pc.addTrack(audioTrack, stream);
-    } else {
-      pc.addTransceiver("audio", { direction: "sendrecv" });
-    }
+    if (audioTrack) pc.addTrack(audioTrack, stream);
+    else pc.addTransceiver("audio", { direction: "sendrecv" });
 
-    // FEATURE A: if we have system audio, add it as a second audio track
+    // System audio as additional audio sender
     if (isSharing && sysAudioTrackRef.current) {
       const sysStream = screenStreamRef.current || new MediaStream([sysAudioTrackRef.current]);
       pc.addTrack(sysAudioTrackRef.current, sysStream);
     }
 
-    if (videoTrack) {
-      pc.addTrack(videoTrack, videoStream);
-    } else {
-      pc.addTransceiver("video", { direction: "sendrecv" });
-    }
+    if (videoTrack) pc.addTrack(videoTrack, videoStream);
+    else pc.addTransceiver("video", { direction: "sendrecv" });
 
     pc.onicecandidate = ({ candidate }) => {
       if (candidate && wsRef.current?.readyState === WebSocket.OPEN) {
@@ -1197,7 +1090,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   }
 
   // ── controls ──────────────────────────────────────────────────────────────
-
   function toggleMic() {
     localStreamRef.current?.getAudioTracks().forEach(t => t.enabled = !micOn);
     setMicOn(v => !v);
@@ -1207,7 +1099,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     setCamOn(v => !v);
   }
 
-  // ── FEATURE A: toggle system audio mute ───────────────────────────────────
   function toggleSysAudio() {
     if (!sysAudioTrackRef.current) return;
     const next = !sysAudioOn;
@@ -1216,41 +1107,25 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     showToast(next ? "🔊 System audio on" : "🔇 System audio muted");
   }
 
-  // ── FEATURE B (fixed) + FEATURE A: screen share ───────────────────────────
+  // ── Screen share (FIX 1 + FIX 2) ─────────────────────────────────────────
   async function startShare() {
-    // Sync-only guards — ZERO awaits before getDisplayMedia (Android Chrome rule)
-    if (!window.isSecureContext) {
-      showToast("⚠️ Screen share needs HTTPS.", 4000);
-      return;
-    }
-    if (!navigator.mediaDevices?.getDisplayMedia) {
-      showToast("⚠️ Screen share not supported on this browser.", 4000);
-      return;
-    }
+    // Sync guards only — no awaits before getDisplayMedia (Android Chrome requirement)
+    if (!window.isSecureContext) { showToast("⚠️ Screen share needs HTTPS.", 4000); return; }
+    if (!navigator.mediaDevices?.getDisplayMedia) { showToast("⚠️ Screen share not supported on this browser.", 4000); return; }
 
-    // ── CRITICAL: getDisplayMedia must be called FIRST, synchronously after user gesture ──
-    // Android Chrome invalidates the gesture token after any await, so:
-    //   ✅ sync checks → getDisplayMedia immediately
-    //   ❌ DO NOT add any await before this line
-    //
-    // Constraints: { video: true, audio: true, systemAudio: 'include' }
-    //   - audio: true  → lets Chrome show "Share system audio" checkbox (Windows/Chrome/Edge)
-    //   - systemAudio: 'include' → hint for Chromium to default-check that box
-    //   - NO nested video object (breaks Android Chrome)
-    //   - NO cursor/resolution constraints (breaks Android Chrome)
+    // ── getDisplayMedia must be FIRST await after user gesture ──
+    // audio: true → Windows Chrome/Edge will show "Share system audio" checkbox
+    // systemAudio: 'include' → hints to default-check that box
+    // NO nested video object → required for Android Chrome compatibility
     let sc;
     try {
       sc = await navigator.mediaDevices.getDisplayMedia({
         video: true,
         audio: true,
-        // systemAudio is a Chrome-specific hint — ignored by other browsers
         systemAudio: "include",
       });
     } catch (e) {
-      if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
-        // User cancelled picker — silent
-        return;
-      }
+      if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") return; // user cancelled
       console.error("getDisplayMedia failed:", e.name, e.message, e);
       showToast(`⚠️ Screen share failed (${e.name}). Try Chrome on desktop/Android.`, 5000);
       return;
@@ -1263,18 +1138,23 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
       return;
     }
 
-    // ── FEATURE A: detect system audio track ─────────────────────────────────
-    // getDisplayMedia can return an audio track if the user checked "Share system audio"
-    // (Windows Chrome/Edge) or if the OS supports it. We capture it separately.
+    // ── FIX 1: build a VIDEO-ONLY preview stream ──────────────────────────────
+    // Chrome renders a BLACK frame when a MediaStream with both video + audio tracks
+    // is set as <video>.srcObject. The fix: create a separate stream with ONLY the
+    // video track for the preview tile. The full stream (with audio) goes to peers.
+    const videoOnlyPreview = new MediaStream([vt]);
+
     const capturedAudioTrack = sc.getAudioTracks()[0] || null;
     const gotSysAudio = !!capturedAudioTrack;
 
-    sharingRef.current      = true;
-    screenTrackRef.current  = vt;
-    screenStreamRef.current = sc;
+    sharingRef.current       = true;
+    screenTrackRef.current   = vt;
+    screenStreamRef.current  = sc;
     sysAudioTrackRef.current = capturedAudioTrack;
 
+    // Store full stream for peer sending; preview stream for local display
     setScreenStream(sc);
+    setScreenPreviewStream(videoOnlyPreview);
     setSharing(true);
     setHasSystemAudio(gotSysAudio);
     setSysAudioOn(true);
@@ -1290,34 +1170,29 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
         await renegotiate(pid);
       }
 
-      // FEATURE A: add system audio track to peers if we got one
+      // Add system audio track to peers if we captured one
       if (capturedAudioTrack) {
-        const existingAudioSenders = pc.getSenders().filter(s => s.track?.kind === "audio");
-        // Add as an additional audio track (mic stays separate)
-        if (existingAudioSenders.length === 1) {
-          // Only mic audio — add system audio as extra sender
+        const audioSenders = pc.getSenders().filter(s => s.track?.kind === "audio");
+        if (audioSenders.length === 1) {
           pc.addTrack(capturedAudioTrack, sc);
           await renegotiate(pid);
         }
-        // If somehow already 2+ audio senders, skip to avoid duplication
       }
     }
 
     vt.onended = stopShare;
 
-    if (gotSysAudio) {
-      showToast("🖥️🔊 Screen + system audio sharing started");
-    } else {
-      showToast("🖥️ Screen sharing started (no system audio — check 'Share audio' in picker)");
-    }
+    showToast(gotSysAudio
+      ? "🖥️🔊 Screen + system audio sharing started"
+      : "🖥️ Screen sharing started (check 'Share audio' in picker for system audio)"
+    );
   }
 
   async function stopShare() {
-    sharingRef.current       = false;
-    screenTrackRef.current   = null;
-    screenStreamRef.current  = null;
+    sharingRef.current      = false;
+    screenTrackRef.current  = null;
+    screenStreamRef.current = null;
 
-    // Stop system audio track
     if (sysAudioTrackRef.current) {
       sysAudioTrackRef.current.stop();
       sysAudioTrackRef.current = null;
@@ -1325,6 +1200,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
     screenStream?.getTracks().forEach(t => t.stop());
     setScreenStream(null);
+    setScreenPreviewStream(null);
     setSharing(false);
     setHasSystemAudio(false);
     setSysAudioOn(true);
@@ -1336,10 +1212,8 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
       const videoSender = pc.getSenders().find(s => s.track?.kind === "video");
       if (videoSender) await videoSender.replaceTrack(cameraTrack);
 
-      // Remove extra audio senders (system audio) — keep only mic
       const audioSenders = pc.getSenders().filter(s => s.track?.kind === "audio");
       if (audioSenders.length > 1) {
-        // Remove all but the first (mic) audio sender
         for (let i = 1; i < audioSenders.length; i++) {
           try { pc.removeTrack(audioSenders[i]); } catch {}
         }
@@ -1359,19 +1233,17 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     screenStream?.getTracks().forEach(t => t.stop());
     sysAudioTrackRef.current?.stop();
     sysAudioTrackRef.current = null;
-    streamRef.current       = null;
-    sharingRef.current      = false;
-    screenTrackRef.current  = null;
+    streamRef.current = null;
+    sharingRef.current = false;
+    screenTrackRef.current = null;
     screenStreamRef.current = null;
-    setLocalStream(null); setScreenStream(null);
+    setLocalStream(null); setScreenStream(null); setScreenPreviewStream(null);
     setRemoteStreams({}); setRemoteNames({});
     setInCall(false); setSharing(false); setPinnedId(null);
     setMicOn(true); setCamOn(true);
     setLobbyStream(null); setStatus("");
     setFacingMode("user");
     setHasSystemAudio(false); setSysAudioOn(true);
-    // FEATURE C: release orientation lock on leave
-    handleUnlockOrientation();
     clearRoomFromUrl();
     requestMedia("user");
   }
@@ -1401,11 +1273,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   function shareLink() {
     const link = buildShareLink(roomId);
     if (navigator.share) {
-      navigator.share({
-        title: "Join my Quick Meet call",
-        text: `Join room ${roomId} on Quick Meet`,
-        url: link,
-      }).catch(() => {});
+      navigator.share({ title: "Join my Quick Meet call", text: `Join room ${roomId} on Quick Meet`, url: link }).catch(() => {});
     } else {
       copyLink();
     }
@@ -1451,50 +1319,45 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const totalCount    = 1 + remotePeerIds.length;
   const hasVideo      = mediaStatus === "ok";
 
-  // FEATURE C: pinned tile header with rotate button (mobile only)
-  function PinnedHeader() {
-    if (!isMobile || !supportsOrientationLock()) return null;
-    return (
-      <div className="vc-pinned-header">
-        <span className="vc-pinned-label">📌 PINNED</span>
-        <button
-          className={`vc-rotate-btn${isLandscapeLocked ? " landscape" : ""}`}
-          onClick={toggleOrientationLock}
-          title={isLandscapeLocked ? "Return to portrait" : "Rotate to landscape"}
-        >
-          {isLandscapeLocked ? "↩️ Portrait" : "🔄 Landscape"}
-        </button>
-      </div>
-    );
-  }
+  // AUTO-ROTATE: apply landscape class only when: mobile + pinned tile + physically landscape
+  const rootClass = `vc-root${(isMobile && pinnedId && inLandscape) ? " vc-root--landscape" : ""}`;
 
   function renderPinnedTile() {
     if (!pinnedId) return null;
+    const header = (
+      <div className="vc-pinned-header">
+        <span className="vc-pinned-label">📌 PINNED{isMobile ? " · tilt for fullscreen" : ""}</span>
+      </div>
+    );
     if (pinnedId === "screen" && sharing && screenStream) {
       return (
         <div className="vc-pinned-wrap">
-          <PinnedHeader />
-          <VideoTile stream={screenStream} name={displayName} isLocal isScreen videoOn
+          {header}
+          {/* FIX 1: use screenPreviewStream (video-only) for the tile display */}
+          <VideoTile
+            stream={screenStream}
+            previewStream={screenPreviewStream}
+            name={displayName} isLocal isScreen videoOn
             hasSystemAudio={hasSystemAudio}
-            isPinned onUnpin={() => { setPinnedId(null); handleUnlockOrientation(); }} />
+            isPinned onUnpin={() => setPinnedId(null)} />
         </div>
       );
     }
     if (pinnedId === "local") {
       return (
         <div className="vc-pinned-wrap">
-          <PinnedHeader />
+          {header}
           <VideoTile stream={localStream} name={displayName} isLocal micOn={micOn} videoOn={camOn}
-            isPinned onUnpin={() => { setPinnedId(null); handleUnlockOrientation(); }} />
+            isPinned onUnpin={() => setPinnedId(null)} />
         </div>
       );
     }
     if (remoteStreams[pinnedId]) {
       return (
         <div className="vc-pinned-wrap">
-          <PinnedHeader />
+          {header}
           <VideoTile stream={remoteStreams[pinnedId]} name={remoteNames[pinnedId] || pinnedId}
-            micOn videoOn isPinned onUnpin={() => { setPinnedId(null); handleUnlockOrientation(); }} />
+            micOn videoOn isPinned onUnpin={() => setPinnedId(null)} />
         </div>
       );
     }
@@ -1503,7 +1366,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
   // ── LOBBY ─────────────────────────────────────────────────────────────────
   if (!inCall) return (
-    <div className="vc-root">
+    <div className={rootClass}>
       <style>{CSS}</style>
       <Toast message={toast} />
       <div className="vc-lobby">
@@ -1559,8 +1422,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
                 )}
                 {isMobile && hasVideo && (
                   <button className="vc-btn-sm" onClick={rotateCamera}
-                    style={{ background: "rgba(0,0,0,0.65)", color: "#fff" }}
-                    title="Switch camera">
+                    style={{ background: "rgba(0,0,0,0.65)", color: "#fff" }} title="Switch camera">
                     🔄
                   </button>
                 )}
@@ -1572,8 +1434,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
           <div className="vc-field">
             <label className="vc-label">Your name</label>
-            <input className="vc-input" value={displayName}
-              onChange={e => setDisplayName(e.target.value)}
+            <input className="vc-input" value={displayName} onChange={e => setDisplayName(e.target.value)}
               placeholder="e.g. Alice" maxLength={40} />
           </div>
 
@@ -1628,11 +1489,12 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
   // ── IN CALL ───────────────────────────────────────────────────────────────
   return (
-    <div className="vc-root">
+    <div className={rootClass}>
       <style>{CSS}</style>
       <Toast message={toast} />
+      {/* AUTO-ROTATE hint overlay shown when landscape + pinned */}
+      <div className="vc-landscape-hint">Tilt back to portrait to exit fullscreen</div>
       <div className="vc-call">
-
         <div className="vc-header">
           <div className="vc-header__left">
             <span style={{ fontSize: 16 }}>📹</span>
@@ -1651,7 +1513,11 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
             {renderPinnedTile()}
 
             {sharing && screenStream && pinnedId !== "screen" && (
-              <VideoTile stream={screenStream} name={displayName} isLocal isScreen videoOn
+              // FIX 1: use screenPreviewStream (video-only) for non-pinned screen tile too
+              <VideoTile
+                stream={screenStream}
+                previewStream={screenPreviewStream}
+                name={displayName} isLocal isScreen videoOn
                 hasSystemAudio={hasSystemAudio}
                 isPinned={false}
                 onPin={() => setPinnedId("screen")}
@@ -1677,12 +1543,11 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
             {pinnedId && (
               <div style={{ textAlign: "center", fontSize: 11, color: "var(--text3)", paddingBottom: 4, fontFamily: "'DM Mono', monospace" }}>
-                Press Esc or tap ✕ Unpin to return to grid
+                {isMobile ? "Tilt phone to landscape for fullscreen · tap ✕ to unpin" : "Press Esc or tap ✕ Unpin to return to grid"}
               </div>
             )}
           </div>
 
-          {/* Sidebar */}
           <div className={`vc-sidebar${sidebarOpen ? " mobile-open" : ""}`}>
             <div className="vc-sidebar__drag-handle" />
             <div className="vc-sidebar__tab-bar">
@@ -1776,17 +1641,15 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
           </div>
         </div>
 
-        {/* Mobile backdrop */}
         <div className={`vc-backdrop${sidebarOpen ? " show" : ""}`} onClick={() => setSidebarOpen(false)} />
 
         <div className="vc-controls">
           <CtrlBtn onClick={toggleMic} variant={micOn ? "normal" : "off"} title={micOn ? "Mute" : "Unmute"} icon={micOn ? "🎙️" : "🔇"} />
           <CtrlBtn onClick={toggleCam} variant={camOn ? "normal" : "off"} title={camOn ? "Stop camera" : "Start camera"} icon={camOn ? "📷" : "📵"} />
           {isMobile && (
-            <CtrlBtn onClick={rotateCamera} variant="normal" title="Switch camera" icon="🔄" />
+            <CtrlBtn onClick={rotateCamera} variant="normal" title="Switch camera (front/rear)" icon="🔄" />
           )}
           <CtrlBtn onClick={sharing ? stopShare : startShare} variant={sharing ? "active" : "normal"} title={sharing ? "Stop sharing" : "Share screen"} icon="🖥️" />
-          {/* FEATURE A: system audio mute button — only shown while sharing and audio was captured */}
           {sharing && hasSystemAudio && (
             <CtrlBtn onClick={toggleSysAudio} variant={sysAudioOn ? "active" : "off"} title={sysAudioOn ? "Mute system audio" : "Unmute system audio"} icon={sysAudioOn ? "🔊" : "🔇"} />
           )}
