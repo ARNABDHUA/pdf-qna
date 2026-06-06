@@ -1110,47 +1110,49 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
   // ── FEATURE 1: screen share with mobile-friendly error handling ───────────
   async function startShare() {
-    // Hard check: API doesn't exist at all (very old browsers)
+    // Android Chrome rule: getDisplayMedia MUST be called synchronously within
+    // the user-gesture handler — zero awaits allowed before it, or Chrome
+    // silently rejects with NotAllowedError / InvalidStateError on real devices
+    // (even though DevTools device-emulation works fine because it relaxes this rule).
+
+    // Quick sync checks — no awaits, so gesture chain is preserved
+    if (!window.isSecureContext) {
+      showToast("⚠️ Screen share needs HTTPS.", 4000);
+      return;
+    }
     if (!navigator.mediaDevices?.getDisplayMedia) {
-      showToast("⚠️ Your browser doesn't support screen share. Try Chrome or Firefox.");
+      showToast("⚠️ Screen share not supported on this browser.", 4000);
       return;
     }
 
-    // Try multiple constraint sets in order of compatibility:
-    // 1. Plain {video:true, audio:true}  — widest support (Android Chrome, iOS Safari 16+)
-    // 2. {video:true} only              — some browsers reject audio in getDisplayMedia
-    // 3. {video:{frameRate:15}}         — last resort minimal
-    const constraintSets = [
-      { video: true, audio: true },
-      { video: true, audio: false },
-      { video: { frameRate: { ideal: 15 } } },
-    ];
-
-    let sc = null;
-    let lastErr = null;
-    for (const constraints of constraintSets) {
-      try {
-        sc = await navigator.mediaDevices.getDisplayMedia(constraints);
-        break; // success
-      } catch (e) {
-        lastErr = e;
-        // User explicitly denied — don't try fallbacks, just stop silently
-        if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") return;
-        // Any other error (NotSupportedError, TypeError, etc.) → try next set
+    // Call getDisplayMedia IMMEDIATELY — first thing after sync checks.
+    // On Android Chrome the user-gesture token expires after the first await,
+    // so this must happen before any async work.
+    // Use the absolute minimum constraints: {video:true} only.
+    // Android Chrome rejects audio:true in getDisplayMedia on many versions,
+    // and any nested constraint object (e.g. {video:{cursor:'always'}}) also fails.
+    let sc;
+    try {
+      sc = await navigator.mediaDevices.getDisplayMedia({ video: true });
+    } catch (e) {
+      if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") {
+        // User dismissed the picker — silent, expected
+        return;
       }
-    }
-
-    if (!sc) {
-      // All constraint sets failed — truly not supported
-      const msg = lastErr?.name === "NotSupportedError" || lastErr?.name === "TypeError"
-        ? "⚠️ Screen share isn't supported on this browser/OS. Try Chrome on Android or desktop."
-        : `⚠️ Screen share failed: ${lastErr?.message || "unknown error"}`;
-      showToast(msg, 4000);
-      console.warn("getDisplayMedia: all constraint sets failed", lastErr);
+      // Any other error: log full details so it's debuggable
+      console.error("getDisplayMedia failed:", e.name, e.message, e);
+      showToast(`⚠️ Screen share failed (${e.name}). Try again or use desktop Chrome.`, 5000);
       return;
     }
 
     const vt = sc.getVideoTracks()[0];
+    if (!vt) {
+      // Shouldn't happen, but guard anyway
+      sc.getTracks().forEach(t => t.stop());
+      showToast("⚠️ No video track in screen capture. Try again.", 4000);
+      return;
+    }
+
     sharingRef.current      = true;
     screenTrackRef.current  = vt;
     screenStreamRef.current = sc;
@@ -1158,6 +1160,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     setScreenStream(sc);
     setSharing(true);
 
+    // Now we're past the gesture boundary — async work is fine here
     for (const pid of Object.keys(pcsRef.current)) {
       const pc = pcsRef.current[pid];
       const sender = pc.getSenders().find(s => s.track?.kind === "video");
