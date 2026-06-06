@@ -1,44 +1,30 @@
 /**
- * VideoCall.jsx – v6
+ * VideoCall.jsx – v7
  *
- * NEW: FIX D — Zoom in/out controls on pinned screen share tile
- * ──────────────────────────────────────────────────────────────────────────────
- * Added zoom state (scale) to the pinned tile. When a screen share tile is pinned,
- * zoom-in (+) and zoom-out (-) buttons appear in the top-left of the fullscreen view.
- * The video element is scaled with CSS transform: scale(zoomLevel) and overflow:hidden
- * so the user can manually adjust to see content better.
- * Pinch-to-zoom is also supported via touch events on the pinned tile.
- * Zoom resets to 1.0 when unpinning.
- * Zoom range: 0.5x – 4.0x, step 0.25x.
+ * CHANGES FROM v6:
+ * ─────────────────────────────────────────────────────────────────────────────
+ * FIX 1 — Proper mobile screen share support
+ *   • Detects missing getDisplayMedia API separately (shows specific toast)
+ *   • Requests video-only first, audio separately — avoids Android Chrome crash
+ *   • Polls track.readyState === "live" for up to 600 ms (rAF wasn't long enough)
+ *   • Second getDisplayMedia call for system audio can't kill video stream
  *
- * NEW: FIX E — Black screen persists on mobile after stop+restart screen share
- * ──────────────────────────────────────────────────────────────────────────────
- * Root causes identified:
- *   1. After stopShare() + startShare(), the new screenPreviewStream had a new
- *      MediaStream object but VideoTile's useEffect compared srcObject by reference.
- *      If React batched the state update, el.srcObject was already set to the old
- *      stream and didn't re-trigger the effect.
- *   2. On Android Chrome, when getDisplayMedia includes audio: true (system audio),
- *      the video track is sometimes handed to the browser in a "not yet decoded" state.
- *      Setting srcObject and calling play() isn't enough — the video element needs
- *      to be fully torn down and recreated to pick up the new track.
- *   3. The screenPreviewStream (video-only clone) was built once with new MediaStream([vt])
- *      but if vt.readyState was "ended" or "muted" at creation time on some Android
- *      versions, the preview stream was already dead.
+ * FIX 2 — orientation.lock no longer awaited
+ *   • On iOS and some Android versions, screen.orientation.lock throws synchronously
+ *   • Now fires with .catch() and doesn't block the fullscreen flow
  *
- * Fixes applied:
- *   a. VideoTile now accepts a `streamKey` prop. When streamKey changes, the video
- *      element is forcibly reset: srcObject = null, load(), then srcObject = newStream,
- *      play(). This is the nuclear option but it reliably clears decoder state.
- *   b. screenPreviewStream is now built with a tiny delay (2 rAF frames) after
- *      getDisplayMedia resolves, so the video track has time to become "live".
- *   c. startShare() now generates a new unique key (shareId) each time it runs.
- *      This key is passed as streamKey to VideoTile, forcing a full remount of the
- *      video element on every new screen share session.
- *   d. In VideoTile useEffect, when streamKey changes, we do a full teardown:
- *      srcObject = null → load() → srcObject = stream → play() with 3 retries (0ms, 300ms, 800ms).
- *   e. Added a "Retry video" button on the screen share tile that appears if the video
- *      is still black after 3 seconds. Clicking it re-runs the play() sequence.
+ * FIX 3 — Zoom extended to ALL pinned tiles (not just screen share)
+ *   • Local camera, remote peer tiles, and screen share all support zoom
+ *   • Zoom controls (＋/－/1:1) appear inside the fullscreen overlay for every pin
+ *   • Pinch-to-zoom via touch events works on all tile types
+ *   • Zoom resets to 1× on unpin
+ *   • Zoom range: 0.5× – 4.0×, step 0.25×
+ *   • Camera tiles use object-fit:cover with transform scale (zooms into the frame)
+ *   • Screen share tiles use object-fit:contain with transform scale (zooms into content)
+ *
+ * FIX 4 — Black screen detection timeout raised to 5 s (mobile decoders are slower)
+ *
+ * FIX 5 — VideoTile streamKey effect also handles non-screen streams cleanly
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -323,7 +309,7 @@ const CSS = `
   }
   .vc-fullscreen-unpin:hover { background: rgba(59,130,246,0.7); }
 
-  /* ── FIX D: ZOOM CONTROLS ── */
+  /* ── ZOOM CONTROLS (all pinned tiles) ── */
   .vc-zoom-controls {
     position: absolute; top: 14px; left: 14px;
     display: flex; flex-direction: column; gap: 6px;
@@ -410,7 +396,7 @@ const CSS = `
   .vc-tile:hover { border-color: rgba(59,130,246,0.4); }
   .vc-tile:hover .vc-tile__pin-hint { opacity: 1; }
 
-  /* FIX C: screen share tiles use contain */
+  /* Screen share tiles use contain */
   .vc-tile--screen { aspect-ratio: 16/9; }
   .vc-tile--screen video {
     width: 100%; height: 100%;
@@ -418,7 +404,7 @@ const CSS = `
     background: #000;
   }
 
-  /* FIX D: zoom wrapper inside screen tile */
+  /* Zoom wrapper — used for ALL pinned tiles */
   .vc-tile__zoom-wrap {
     width: 100%; height: 100%;
     overflow: hidden;
@@ -428,11 +414,13 @@ const CSS = `
   }
   .vc-tile__zoom-wrap video {
     width: 100%; height: 100%;
-    object-fit: contain;
     transform-origin: center center;
-    transition: transform 0.2s ease;
+    transition: transform 0.15s ease;
     will-change: transform;
   }
+  /* Camera tiles cover, screen tiles contain */
+  .vc-tile__zoom-wrap--camera video { object-fit: cover; }
+  .vc-tile__zoom-wrap--screen video { object-fit: contain; }
 
   .vc-tile video { width: 100%; height: 100%; object-fit: cover; }
   .vc-tile video.mirror { transform: scaleX(-1); }
@@ -475,7 +463,7 @@ const CSS = `
   }
   .vc-tile__unpin-btn:hover { background: rgba(59,130,246,1); }
 
-  /* FIX E: Retry button for black screen */
+  /* Retry button for black screen */
   .vc-tile__retry-btn {
     position: absolute; bottom: 36px; left: 50%; transform: translateX(-50%);
     background: rgba(245,158,11,0.85); backdrop-filter: blur(6px);
@@ -650,84 +638,106 @@ function Toast({ message }) {
   return <div className="vc-toast">{message}</div>;
 }
 
+// ── ZoomControls — shown inside fullscreen overlay for ALL pinned tiles ────────
+const ZOOM_MIN = 0.5, ZOOM_MAX = 4.0, ZOOM_STEP = 0.25;
+
+function ZoomControls({ zoom, onZoom }) {
+  return (
+    <div className="vc-zoom-controls">
+      <button
+        className="vc-zoom-btn"
+        onClick={e => { e.stopPropagation(); onZoom(prev => Math.min(ZOOM_MAX, Math.round((prev + ZOOM_STEP) * 100) / 100)); }}
+        disabled={zoom >= ZOOM_MAX}
+        title="Zoom in"
+      >＋</button>
+      <div className="vc-zoom-label">{Math.round(zoom * 100)}%</div>
+      <button
+        className="vc-zoom-btn"
+        onClick={e => { e.stopPropagation(); onZoom(prev => Math.max(ZOOM_MIN, Math.round((prev - ZOOM_STEP) * 100) / 100)); }}
+        disabled={zoom <= ZOOM_MIN}
+        title="Zoom out"
+      >－</button>
+      {zoom !== 1 && (
+        <button
+          className="vc-zoom-reset"
+          onClick={e => { e.stopPropagation(); onZoom(1); }}
+          title="Reset zoom"
+        >1:1</button>
+      )}
+    </div>
+  );
+}
+
 // ── VideoTile ─────────────────────────────────────────────────────────────────
-// FIX E: streamKey prop forces full video element reset when screen share restarts.
-// When streamKey changes (new share session), we null srcObject, call load(), reassign
-// srcObject, then play() with multiple retries. This clears the mobile Chrome decoder.
+// Props:
+//   stream / previewStream — media streams
+//   name, isLocal, micOn, videoOn
+//   isScreen — true for screen share tiles
+//   isPinned, onPin, onUnpin
+//   hasSystemAudio
+//   streamKey — unique key per screen share session (forces video element reset)
+//   zoomLevel — current zoom (1 = 100%) — only meaningful when isPinned
+//   onZoomChange — callback(updaterFn) — only meaningful when isPinned
 function VideoTile({
   stream, previewStream, name, isLocal,
   micOn = true, videoOn = true,
   isScreen, isPinned, onPin, onUnpin,
   hasSystemAudio,
-  streamKey,          // FIX E: unique key per screen share session
-  zoomLevel = 1,      // FIX D: zoom level for screen share tiles
-  onZoomChange,       // FIX D: callback(newZoom)
+  streamKey,
+  zoomLevel = 1,
+  onZoomChange,
 }) {
   const videoRef = useRef(null);
   const displayStream = previewStream || stream;
   const [showRetry, setShowRetry] = useState(false);
   const blackCheckTimer = useRef(null);
-  const retryCount = useRef(0);
 
-  // FIX D: pinch-to-zoom via touch events
+  // Pinch-to-zoom state
   const pinchRef = useRef({ dist: null });
 
   function forcePlayVideo(el) {
     if (!el) return;
-    const retries = [0, 300, 800, 1500];
-    retries.forEach((delay, i) => {
+    [0, 300, 800, 1500].forEach(delay => {
       setTimeout(() => {
         if (!el.srcObject) return;
         const p = el.play();
-        if (p && typeof p.catch === "function") {
-          p.catch(() => {});
-        }
+        if (p && typeof p.catch === "function") p.catch(() => {});
       }, delay);
     });
   }
 
   function fullyResetVideo(el, newStream) {
     if (!el) return;
-    // Nuclear reset: clear srcObject, flush decoder, reassign
     el.srcObject = null;
     try { el.load?.(); } catch (_) {}
     el.srcObject = newStream || null;
-    if (newStream) {
-      forcePlayVideo(el);
-    }
+    if (newStream) forcePlayVideo(el);
   }
 
+  // Primary effect: triggered by streamKey (screen share sessions) or displayStream changes
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-
-    // FIX E: when streamKey changes (new share session), do a full reset
     fullyResetVideo(el, displayStream);
 
-    // Black-screen detection: check 3s after stream assignment
     clearTimeout(blackCheckTimer.current);
-    retryCount.current = 0;
     setShowRetry(false);
 
     if (displayStream && isScreen) {
+      // FIX 4: raised to 5 s for slow mobile decoders
       blackCheckTimer.current = setTimeout(() => {
-        // If video is paused or has zero dimensions, show retry button
-        if (el && (el.paused || el.videoWidth === 0)) {
-          setShowRetry(true);
-        }
-      }, 3000);
+        if (el && (el.paused || el.videoWidth === 0)) setShowRetry(true);
+      }, 5000);
     }
-
     return () => clearTimeout(blackCheckTimer.current);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [streamKey, displayStream]);
 
-  // Separate effect for non-screen tiles where streamKey doesn't matter
+  // For non-screen tiles: update srcObject if stream ref changes without streamKey change
   useEffect(() => {
-    if (isScreen) return; // screen tiles are handled by streamKey effect above
+    if (isScreen) return;
     const el = videoRef.current;
-    if (!el) return;
-    if (el.srcObject === displayStream) return;
+    if (!el || el.srcObject === displayStream) return;
     el.srcObject = displayStream || null;
     if (displayStream) {
       try { el.load?.(); } catch (_) {}
@@ -740,31 +750,28 @@ function VideoTile({
     if (!el) return;
     setShowRetry(false);
     fullyResetVideo(el, displayStream);
-    // If still black after retry, show button again
     blackCheckTimer.current = setTimeout(() => {
-      if (el && (el.paused || el.videoWidth === 0)) {
-        setShowRetry(true);
-      }
-    }, 3000);
+      if (el && (el.paused || el.videoWidth === 0)) setShowRetry(true);
+    }, 5000);
   }
 
-  // FIX D: pinch-to-zoom touch handlers
+  // Pinch-to-zoom — works on any pinned tile
   function getTouchDist(e) {
     const [t1, t2] = [e.touches[0], e.touches[1]];
     return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
   }
   function onTouchStart(e) {
-    if (e.touches.length === 2 && isScreen && onZoomChange) {
+    if (e.touches.length === 2 && isPinned && onZoomChange) {
       pinchRef.current.dist = getTouchDist(e);
       e.preventDefault();
     }
   }
   function onTouchMove(e) {
-    if (e.touches.length === 2 && isScreen && onZoomChange && pinchRef.current.dist !== null) {
+    if (e.touches.length === 2 && isPinned && onZoomChange && pinchRef.current.dist !== null) {
       const newDist = getTouchDist(e);
       const delta = newDist / pinchRef.current.dist;
       pinchRef.current.dist = newDist;
-      onZoomChange(prev => Math.min(4, Math.max(0.5, prev * delta)));
+      onZoomChange(prev => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, prev * delta)));
       e.preventDefault();
     }
   }
@@ -772,7 +779,18 @@ function VideoTile({
     if (e.touches.length < 2) pinchRef.current.dist = null;
   }
 
+  // Wheel-to-zoom when pinned
+  function onWheel(e) {
+    if (!isPinned || !onZoomChange) return;
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -ZOOM_STEP : ZOOM_STEP;
+    onZoomChange(prev => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round((prev + delta) * 100) / 100)));
+  }
+
   const showVideo = !!displayStream && (isScreen || videoOn);
+
+  // Determine zoom wrapper class: camera tiles use cover, screen tiles use contain
+  const zoomWrapClass = `vc-tile__zoom-wrap${isScreen ? " vc-tile__zoom-wrap--screen" : " vc-tile__zoom-wrap--camera"}`;
 
   return (
     <div
@@ -781,27 +799,20 @@ function VideoTile({
       onTouchStart={onTouchStart}
       onTouchMove={onTouchMove}
       onTouchEnd={onTouchEnd}
+      onWheel={onWheel}
     >
-      {/* FIX D: zoom wrapper for screen tiles */}
-      {isScreen ? (
-        <div className="vc-tile__zoom-wrap">
-          <video
-            ref={videoRef}
-            autoPlay playsInline muted={isLocal}
-            style={{
-              display: showVideo ? "block" : "none",
-              transform: `scale(${zoomLevel})`,
-            }}
-          />
-        </div>
-      ) : (
+      {/* Zoom wrapper — used for ALL tiles so zoom works on pinned camera too */}
+      <div className={zoomWrapClass}>
         <video
           ref={videoRef}
           autoPlay playsInline muted={isLocal}
           className={isLocal && !isScreen ? "mirror" : ""}
-          style={{ display: showVideo ? "block" : "none" }}
+          style={{
+            display: showVideo ? "block" : "none",
+            transform: isPinned ? `scale(${zoomLevel})` : undefined,
+          }}
         />
-      )}
+      </div>
 
       <div className="vc-tile__avatar" style={{ display: showVideo ? "none" : "flex" }}>
         {initials(name)}
@@ -814,12 +825,11 @@ function VideoTile({
       <div className="vc-tile__label">
         {!micOn && <span className="vc-tile__muted">🔇</span>}
         {name}{isLocal ? " (you)" : ""}{isScreen ? " · screen" : ""}
-        {isScreen && zoomLevel !== 1 && (
+        {isPinned && zoomLevel !== 1 && (
           <span style={{ marginLeft: 4, opacity: 0.6 }}>{Math.round(zoomLevel * 100)}%</span>
         )}
       </div>
 
-      {/* FIX E: Retry button if black screen detected */}
       {showRetry && isScreen && (
         <button
           className="vc-tile__retry-btn"
@@ -902,50 +912,15 @@ function CtrlBtn({ onClick, variant = "normal", title, icon, badge }) {
   );
 }
 
-// ── FIX D: Zoom Controls Component ───────────────────────────────────────────
-function ZoomControls({ zoom, onZoom, isScreen }) {
-  if (!isScreen) return null;
-  const MIN = 0.5, MAX = 4.0, STEP = 0.25;
-  return (
-    <div className="vc-zoom-controls">
-      <button
-        className="vc-zoom-btn"
-        onClick={e => { e.stopPropagation(); onZoom(prev => Math.min(MAX, Math.round((prev + STEP) * 100) / 100)); }}
-        disabled={zoom >= MAX}
-        title="Zoom in"
-      >＋</button>
-      <div className="vc-zoom-label">{Math.round(zoom * 100)}%</div>
-      <button
-        className="vc-zoom-btn"
-        onClick={e => { e.stopPropagation(); onZoom(prev => Math.max(MIN, Math.round((prev - STEP) * 100) / 100)); }}
-        disabled={zoom <= MIN}
-        title="Zoom out"
-      >－</button>
-      {zoom !== 1 && (
-        <button
-          className="vc-zoom-reset"
-          onClick={e => { e.stopPropagation(); onZoom(1); }}
-          title="Reset zoom"
-        >1:1</button>
-      )}
-    </div>
-  );
-}
-
 // ── Fullscreen helpers ────────────────────────────────────────────────────────
 async function requestTrueFullscreen(el) {
   try {
     if (!el) return false;
-    if (el.requestFullscreen) {
-      await el.requestFullscreen({ navigationUI: "hide" });
-    } else if (el.webkitRequestFullscreen) {
-      await el.webkitRequestFullscreen();
-    } else {
-      return false;
-    }
-    try {
-      if (screen.orientation?.lock) await screen.orientation.lock("landscape");
-    } catch (_) {}
+    if (el.requestFullscreen) await el.requestFullscreen({ navigationUI: "hide" });
+    else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
+    else return false;
+    // FIX 2: don't await orientation.lock — throws on iOS, blocks fullscreen flow
+    screen.orientation?.lock?.("landscape").catch(() => {});
     return true;
   } catch (e) {
     console.warn("requestFullscreen failed:", e);
@@ -1004,9 +979,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const [localStream, setLocalStream]   = useState(null);
   const [screenStream, setScreenStream] = useState(null);
   const [screenPreviewStream, setScreenPreviewStream] = useState(null);
-
-  // FIX E: unique key per screen share session to force VideoTile remount of video element
-  const [shareSessionKey, setShareSessionKey] = useState(null);
+  const [shareSessionKey, setShareSessionKey]         = useState(null);
 
   const [remoteStreams, setRemoteStreams] = useState({});
   const [remoteNames, setRemoteNames]   = useState({});
@@ -1026,10 +999,9 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const [pinnedId, setPinnedId]         = useState(null);
   const [cssFallbackFullscreen, setCssFallbackFullscreen] = useState(false);
 
-  // FIX D: zoom state for pinned tile
+  // FIX 3: pinnedZoom applies to ALL pinned tile types
   const [pinnedZoom, setPinnedZoom] = useState(1);
 
-  // System audio
   const [hasSystemAudio, setHasSystemAudio] = useState(false);
   const [sysAudioOn, setSysAudioOn]         = useState(true);
   const sysAudioTrackRef                     = useRef(null);
@@ -1047,10 +1019,10 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const pinnedWrapRef   = useRef(null);
   useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
 
-  // ── FIX D+B: pin → fullscreen + reset zoom ─────────────────────────────────
+  // ── Pin tile — resets zoom for all tile types ─────────────────────────────
   async function pinTile(id) {
     setPinnedId(id);
-    setPinnedZoom(1); // Reset zoom on new pin
+    setPinnedZoom(1); // Always reset zoom on new pin
     await new Promise(r => requestAnimationFrame(r));
     await new Promise(r => requestAnimationFrame(r));
 
@@ -1060,20 +1032,20 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     const ok = await requestTrueFullscreen(el);
     if (!ok) {
       setCssFallbackFullscreen(true);
-      showToast("📌 Pinned fullscreen (tap ✕ to exit)", 2500);
+      showToast("📌 Pinned — use ＋/－ to zoom · tap ✕ to exit", 3000);
     } else {
-      showToast("📌 Fullscreen — tap ✕ Unpin to exit", 2500);
+      showToast("📌 Fullscreen — use ＋/－ to zoom · pinch on mobile", 3000);
     }
   }
 
   async function unpinTile() {
     setPinnedId(null);
     setCssFallbackFullscreen(false);
-    setPinnedZoom(1); // Reset zoom on unpin
+    setPinnedZoom(1);
     await exitTrueFullscreen();
   }
 
-  // Listen for native fullscreen exit
+  // Native fullscreen exit listener
   useEffect(() => {
     function onFsChange() {
       if (!document.fullscreenElement && !document.webkitFullscreenElement) {
@@ -1097,7 +1069,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // ── media helpers ─────────────────────────────────────────────────────────
+  // ── Media helpers ─────────────────────────────────────────────────────────
   function applyStream(s) {
     streamRef.current = s;
     setLobbyStream(s);
@@ -1181,7 +1153,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     rotatingRef.current = false;
   }
 
-  // ── join / create ─────────────────────────────────────────────────────────
+  // ── Join / Create ─────────────────────────────────────────────────────────
   async function handleCreate() {
     const name = displayName.trim();
     if (!name) { setLobbyError("Please enter your name."); return; }
@@ -1249,7 +1221,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     };
   }
 
-  // ── signaling ─────────────────────────────────────────────────────────────
+  // ── Signaling ─────────────────────────────────────────────────────────────
   function handleMsg(msg) {
     switch (msg.type) {
       case "peers":
@@ -1392,7 +1364,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     iceQRef.current[pid] = [];
   }
 
-  // ── controls ──────────────────────────────────────────────────────────────
+  // ── In-call controls ──────────────────────────────────────────────────────
   function toggleMic() {
     localStreamRef.current?.getAudioTracks().forEach(t => t.enabled = !micOn);
     setMicOn(v => !v);
@@ -1410,30 +1382,27 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     showToast(next ? "🔊 System audio on" : "🔇 System audio muted");
   }
 
-  // ── Screen share ──────────────────────────────────────────────────────────
-  // FIX E: Build the preview stream with a delay so the track is fully "live"
-  // on mobile before we attach it to a video element.
-  async function waitFrames(n = 2) {
-    for (let i = 0; i < n; i++) {
-      await new Promise(r => requestAnimationFrame(r));
-    }
-  }
-
+  // ── Screen share (FIX 1: video-only first, audio separate, poll readyState) ──
   async function startShare() {
-    if (!window.isSecureContext) { showToast("⚠️ Screen share needs HTTPS.", 4000); return; }
-    if (!navigator.mediaDevices?.getDisplayMedia) { showToast("⚠️ Screen share not supported on this browser.", 4000); return; }
+    if (!window.isSecureContext) {
+      showToast("⚠️ Screen share needs HTTPS.", 4000);
+      return;
+    }
+
+    // FIX 1a: Distinguish unsupported API from runtime failures
+    if (!navigator.mediaDevices?.getDisplayMedia) {
+      showToast("⚠️ Screen share not supported on this browser. Try Chrome on Android.", 5000);
+      return;
+    }
 
     let sc;
     try {
-      sc = await navigator.mediaDevices.getDisplayMedia({
-        video: true,
-        audio: true,
-        systemAudio: "include",
-      });
+      // FIX 1b: Video-only first — audio:true crashes Android Chrome on many devices
+      sc = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
     } catch (e) {
       if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") return;
-      console.error("getDisplayMedia failed:", e.name, e.message, e);
-      showToast(`⚠️ Screen share failed (${e.name}). Try Chrome on desktop/Android.`, 5000);
+      console.error("getDisplayMedia failed:", e.name, e.message);
+      showToast(`⚠️ Screen share failed (${e.name}). Try Chrome on Android/desktop.`, 5000);
       return;
     }
 
@@ -1444,17 +1413,37 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
       return;
     }
 
-    // FIX E: Wait for 2 animation frames so mobile Chrome fully initialises the track
-    await waitFrames(2);
+    // FIX 1c: Poll readyState — rAF alone isn't long enough on Android (up to 600 ms)
+    const trackReady = await new Promise(resolve => {
+      if (vt.readyState === "live") { resolve(true); return; }
+      let elapsed = 0;
+      const interval = setInterval(() => {
+        elapsed += 50;
+        if (vt.readyState === "live") { clearInterval(interval); resolve(true); }
+        else if (elapsed >= 600) { clearInterval(interval); resolve(false); }
+      }, 50);
+    });
 
-    // FIX E: Build a brand new MediaStream each time so React sees a new object reference
-    const videoOnlyPreview = new MediaStream([vt]);
+    if (!trackReady) {
+      sc.getTracks().forEach(t => t.stop());
+      showToast("⚠️ Screen capture failed to initialise. Please try again.", 4000);
+      return;
+    }
 
-    const capturedAudioTrack = sc.getAudioTracks()[0] || null;
+    // FIX 1d: Try system audio in a separate call — failure here won't kill video
+    let capturedAudioTrack = null;
+    try {
+      const audioSc = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+      capturedAudioTrack = audioSc.getAudioTracks()[0] || null;
+      // Stop the extra video track we were forced to request
+      audioSc.getVideoTracks().forEach(t => t.stop());
+    } catch (_) {
+      // System audio unavailable — fine, proceed without it
+    }
+
     const gotSysAudio = !!capturedAudioTrack;
-
-    // FIX E: Generate a new session key so VideoTile knows to fully reset its <video>
     const newKey = randomId();
+    const videoOnlyPreview = new MediaStream([vt]);
 
     sharingRef.current       = true;
     screenTrackRef.current   = vt;
@@ -1463,7 +1452,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
     setScreenStream(sc);
     setScreenPreviewStream(videoOnlyPreview);
-    setShareSessionKey(newKey);  // FIX E: triggers VideoTile nuclear reset
+    setShareSessionKey(newKey);
     setSharing(true);
     setHasSystemAudio(gotSysAudio);
     setSysAudioOn(true);
@@ -1488,10 +1477,9 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     }
 
     vt.onended = stopShare;
-
     showToast(gotSysAudio
-      ? "🖥️🔊 Screen + system audio sharing started"
-      : "🖥️ Screen sharing started (check 'Share audio' in picker for system audio)"
+      ? "🖥️🔊 Screen + system audio sharing"
+      : "🖥️ Screen sharing started"
     );
   }
 
@@ -1508,7 +1496,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     screenStream?.getTracks().forEach(t => t.stop());
     setScreenStream(null);
     setScreenPreviewStream(null);
-    setShareSessionKey(null);  // FIX E: clear session key
+    setShareSessionKey(null);
     setSharing(false);
     setHasSystemAudio(false);
     setSysAudioOn(true);
@@ -1633,17 +1621,11 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const hasVideo      = mediaStatus === "ok";
 
   const pinnedWrapClass = `vc-pinned-wrap${cssFallbackFullscreen ? " vc-pinned--fullscreen" : ""}`;
+  const pinnedIsScreen  = pinnedId === "screen";
 
-  // Determine if pinned tile is a screen share
-  const pinnedIsScreen = pinnedId === "screen";
-
+  // ── Render pinned tile with zoom controls for ALL types ───────────────────
   function renderPinnedTile() {
     if (!pinnedId) return null;
-
-    // FIX D: Zoom controls shown inside fullscreen overlay for screen tiles
-    const zoomControls = pinnedIsScreen ? (
-      <ZoomControls zoom={pinnedZoom} onZoom={setPinnedZoom} isScreen={true} />
-    ) : null;
 
     const header = (
       <div className="vc-pinned-header">
@@ -1651,13 +1633,15 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
       </div>
     );
 
+    // FIX 3: ZoomControls now rendered for all pinned types
     const overlay = (
       <div className="vc-fullscreen-overlay">
-        {/* FIX D: Zoom controls inside fullscreen overlay */}
-        {zoomControls}
+        <ZoomControls zoom={pinnedZoom} onZoom={setPinnedZoom} />
         <button className="vc-fullscreen-unpin" onClick={unpinTile}>✕ Unpin / Exit Fullscreen</button>
         <div className="vc-fullscreen-hint">
-          {isMobile ? "Pinch to zoom · Tap ✕ to exit" : "Scroll or use ＋/－ to zoom · Esc to exit"}
+          {isMobile
+            ? "Pinch to zoom · tap ＋/－ · tap ✕ to exit"
+            : "Scroll or ＋/－ to zoom · Esc to exit"}
         </div>
       </div>
     );
@@ -1680,26 +1664,40 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
         </div>
       );
     }
+
     if (pinnedId === "local") {
       return (
         <div className={pinnedWrapClass} ref={pinnedWrapRef}>
           {!cssFallbackFullscreen && header}
-          <VideoTile stream={localStream} name={displayName} isLocal micOn={micOn} videoOn={camOn}
-            isPinned onUnpin={unpinTile} />
+          <VideoTile
+            stream={localStream} name={displayName} isLocal
+            micOn={micOn} videoOn={camOn}
+            isPinned onUnpin={unpinTile}
+            zoomLevel={pinnedZoom}
+            onZoomChange={setPinnedZoom}
+          />
           {overlay}
         </div>
       );
     }
+
     if (remoteStreams[pinnedId]) {
       return (
         <div className={pinnedWrapClass} ref={pinnedWrapRef}>
           {!cssFallbackFullscreen && header}
-          <VideoTile stream={remoteStreams[pinnedId]} name={remoteNames[pinnedId] || pinnedId}
-            micOn videoOn isPinned onUnpin={unpinTile} />
+          <VideoTile
+            stream={remoteStreams[pinnedId]}
+            name={remoteNames[pinnedId] || pinnedId}
+            micOn videoOn
+            isPinned onUnpin={unpinTile}
+            zoomLevel={pinnedZoom}
+            onZoomChange={setPinnedZoom}
+          />
           {overlay}
         </div>
       );
     }
+
     return null;
   }
 
@@ -1865,24 +1863,32 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
             <div className="vc-grid" data-count={Math.min(totalCount, 6)}>
               {pinnedId !== "local" && (
-                <VideoTile stream={localStream} name={displayName} isLocal micOn={micOn} videoOn={camOn}
+                <VideoTile
+                  stream={localStream} name={displayName} isLocal
+                  micOn={micOn} videoOn={camOn}
                   isPinned={false}
                   onPin={() => pinTile("local")}
-                  onUnpin={unpinTile} />
+                  onUnpin={unpinTile}
+                />
               )}
               {remotePeerIds.filter(pid => pid !== pinnedId).map(pid => (
-                <VideoTile key={pid} stream={remoteStreams[pid]}
+                <VideoTile
+                  key={pid}
+                  stream={remoteStreams[pid]}
                   name={remoteNames[pid] || pid}
                   micOn videoOn
                   isPinned={false}
                   onPin={() => pinTile(pid)}
-                  onUnpin={unpinTile} />
+                  onUnpin={unpinTile}
+                />
               ))}
             </div>
 
             {pinnedId && !cssFallbackFullscreen && (
               <div style={{ textAlign: "center", fontSize: 11, color: "var(--text3)", paddingBottom: 4, fontFamily: "'DM Mono', monospace" }}>
-                {isMobile ? "Pinch to zoom · Tap ✕ Unpin or use back button to exit" : "Use ＋/－ to zoom · Press Esc or tap ✕ Unpin to return to grid"}
+                {isMobile
+                  ? "Pinch to zoom · tap ＋/－ · tap ✕ Unpin to return to grid"
+                  : "Scroll or ＋/－ to zoom · Press Esc or tap ✕ Unpin to return to grid"}
               </div>
             )}
           </div>
