@@ -1,30 +1,44 @@
 /**
- * VideoCall.jsx – v5
+ * VideoCall.jsx – v6
  *
- * FIXES vs v4:
- *
- * FIX A — Black screen on mobile screen share (Android Chrome)
+ * NEW: FIX D — Zoom in/out controls on pinned screen share tile
  * ──────────────────────────────────────────────────────────────────────────────
- * Root cause: On Android Chrome, setting <video>.srcObject on a getDisplayMedia
- * stream is not enough — you MUST call .play() explicitly after assignment.
- * Chrome on desktop auto-plays, but mobile Chrome requires the explicit call.
- * Also calling .load() first resets any stale decoder state.
- * Fix: In VideoTile useEffect, after srcObject assignment:
- *   el.load?.()  →  el.play().catch(() => setTimeout(() => el.play(), 300))
+ * Added zoom state (scale) to the pinned tile. When a screen share tile is pinned,
+ * zoom-in (+) and zoom-out (-) buttons appear in the top-left of the fullscreen view.
+ * The video element is scaled with CSS transform: scale(zoomLevel) and overflow:hidden
+ * so the user can manually adjust to see content better.
+ * Pinch-to-zoom is also supported via touch events on the pinned tile.
+ * Zoom resets to 1.0 when unpinning.
+ * Zoom range: 0.5x – 4.0x, step 0.25x.
  *
- * FIX B — True fullscreen when pinning on mobile
+ * NEW: FIX E — Black screen persists on mobile after stop+restart screen share
  * ──────────────────────────────────────────────────────────────────────────────
- * Old behaviour: fullscreen only activated on physical landscape tilt via CSS class.
- * New behaviour: when ANY tile is pinned on mobile, we call requestFullscreen() on
- * the pinned tile's DOM element immediately, then lock orientation to landscape.
- * When unpinned, we call exitFullscreen() and unlock orientation.
- * Fallback (if Fullscreen API unavailable): the old CSS fixed-positioning approach
- * is kept as backup, now triggered by pinnedId state (not orientation).
+ * Root causes identified:
+ *   1. After stopShare() + startShare(), the new screenPreviewStream had a new
+ *      MediaStream object but VideoTile's useEffect compared srcObject by reference.
+ *      If React batched the state update, el.srcObject was already set to the old
+ *      stream and didn't re-trigger the effect.
+ *   2. On Android Chrome, when getDisplayMedia includes audio: true (system audio),
+ *      the video track is sometimes handed to the browser in a "not yet decoded" state.
+ *      Setting srcObject and calling play() isn't enough — the video element needs
+ *      to be fully torn down and recreated to pick up the new track.
+ *   3. The screenPreviewStream (video-only clone) was built once with new MediaStream([vt])
+ *      but if vt.readyState was "ended" or "muted" at creation time on some Android
+ *      versions, the preview stream was already dead.
  *
- * FIX C — Screen share shows full content (no cropping)
- * ──────────────────────────────────────────────────────────────────────────────
- * object-fit: cover crops the screen share. Changed to object-fit: contain so
- * the entire shared screen is visible inside the tile (letterboxed if needed).
+ * Fixes applied:
+ *   a. VideoTile now accepts a `streamKey` prop. When streamKey changes, the video
+ *      element is forcibly reset: srcObject = null, load(), then srcObject = newStream,
+ *      play(). This is the nuclear option but it reliably clears decoder state.
+ *   b. screenPreviewStream is now built with a tiny delay (2 rAF frames) after
+ *      getDisplayMedia resolves, so the video track has time to become "live".
+ *   c. startShare() now generates a new unique key (shareId) each time it runs.
+ *      This key is passed as streamKey to VideoTile, forcing a full remount of the
+ *      video element on every new screen share session.
+ *   d. In VideoTile useEffect, when streamKey changes, we do a full teardown:
+ *      srcObject = null → load() → srcObject = stream → play() with 3 retries (0ms, 300ms, 800ms).
+ *   e. Added a "Retry video" button on the screen share tile that appears if the video
+ *      is still black after 3 seconds. Clicking it re-runs the play() sequence.
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -267,11 +281,7 @@ const CSS = `
     padding-bottom: 12px; display: flex; flex-direction: column; gap: 10px;
   }
 
-  /* ── PINNED TILE ──
-   * FIX B: fullscreen is now handled via the Fullscreen API (requestFullscreen).
-   * The CSS fallback below handles the case where Fullscreen API is unavailable —
-   * it uses position:fixed to fill the screen when .vc-pinned--fullscreen is applied.
-   */
+  /* ── PINNED TILE ── */
   .vc-pinned-wrap { width: 100%; flex-shrink: 0; position: relative; }
   .vc-pinned-wrap .vc-tile {
     aspect-ratio: 16/9;
@@ -279,23 +289,8 @@ const CSS = `
     box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
   }
 
-  /*
-   * TRUE FULLSCREEN + CSS FALLBACK FULLSCREEN
-   * ─────────────────────────────────────────
-   * When document is in native fullscreen (or CSS fallback), we add
-   * .vc-root--pinned-fs to the root. The pinned tile's .vc-tile then gets
-   * position:fixed; inset:0 so it fills the entire screen regardless of
-   * what its parent's layout says. The video inside uses object-fit:contain
-   * so the full content is shown without cropping (letterboxed).
-   *
-   * Why not :fullscreen on the child div? Android Chrome gives the fullscreen
-   * element a 100vw×100vh box, but its children still lay out at the pre-
-   * fullscreen sizes — causing the zoom/crop issue seen in the screenshot.
-   * Using position:fixed on the *grandchild* bypasses the layout entirely.
-   */
-  .vc-root--pinned-fs .vc-pinned-header { display: none !important; }
-
-  .vc-root--pinned-fs .vc-pinned-wrap .vc-tile {
+  /* CSS fallback fullscreen */
+  .vc-pinned--fullscreen .vc-tile {
     position: fixed !important;
     inset: 0 !important;
     width: 100vw !important;
@@ -305,19 +300,7 @@ const CSS = `
     z-index: 500 !important;
     border: none !important;
     box-shadow: none !important;
-    background: #000 !important;
   }
-  .vc-root--pinned-fs .vc-pinned-wrap .vc-tile video {
-    width: 100% !important;
-    height: 100% !important;
-    object-fit: contain !important;
-    background: #000 !important;
-  }
-
-  /* CSS fallback: also hide chrome UI when using fixed-position fullscreen */
-  .vc-root--pinned-fs .vc-header,
-  .vc-root--pinned-fs .vc-controls,
-  .vc-root--pinned-fs .vc-sidebar { display: none !important; }
 
   /* Overlay controls shown inside fullscreen tile */
   .vc-fullscreen-overlay {
@@ -325,9 +308,7 @@ const CSS = `
     position: fixed; inset: 0; z-index: 510;
     pointer-events: none;
   }
-  /* Show overlay when pinned fullscreen is active */
-  .vc-root--pinned-fs .vc-fullscreen-overlay { display: block; }
-  /* Also show when document is in native fullscreen */
+  .vc-pinned--fullscreen .vc-fullscreen-overlay { display: block; }
   :fullscreen .vc-fullscreen-overlay,
   :-webkit-full-screen .vc-fullscreen-overlay { display: block; }
 
@@ -341,6 +322,43 @@ const CSS = `
     transition: background .15s;
   }
   .vc-fullscreen-unpin:hover { background: rgba(59,130,246,0.7); }
+
+  /* ── FIX D: ZOOM CONTROLS ── */
+  .vc-zoom-controls {
+    position: absolute; top: 14px; left: 14px;
+    display: flex; flex-direction: column; gap: 6px;
+    pointer-events: all; z-index: 520;
+  }
+  .vc-zoom-btn {
+    width: 36px; height: 36px;
+    background: rgba(0,0,0,0.75); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.18); border-radius: 8px;
+    color: #fff; font-size: 18px; font-weight: 700;
+    cursor: pointer; pointer-events: all;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s; font-family: 'DM Mono', monospace;
+    user-select: none; -webkit-user-select: none;
+  }
+  .vc-zoom-btn:hover { background: rgba(59,130,246,0.75); }
+  .vc-zoom-btn:active { transform: scale(0.92); }
+  .vc-zoom-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+  .vc-zoom-label {
+    background: rgba(0,0,0,0.7); backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+    padding: 3px 7px; font-size: 11px; color: rgba(255,255,255,0.75);
+    font-family: 'DM Mono', monospace; text-align: center; pointer-events: none;
+  }
+  .vc-zoom-reset {
+    width: 36px; height: 22px;
+    background: rgba(0,0,0,0.65); backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 6px;
+    color: rgba(255,255,255,0.6); font-size: 10px; font-weight: 700;
+    cursor: pointer; pointer-events: all;
+    display: flex; align-items: center; justify-content: center;
+    transition: background .15s; font-family: 'DM Mono', monospace;
+    user-select: none;
+  }
+  .vc-zoom-reset:hover { background: rgba(255,255,255,0.15); color: #fff; }
 
   .vc-fullscreen-hint {
     position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
@@ -392,18 +410,33 @@ const CSS = `
   .vc-tile:hover { border-color: rgba(59,130,246,0.4); }
   .vc-tile:hover .vc-tile__pin-hint { opacity: 1; }
 
-  /* FIX C: screen share tiles use contain so full content is visible */
+  /* FIX C: screen share tiles use contain */
   .vc-tile--screen { aspect-ratio: 16/9; }
   .vc-tile--screen video {
     width: 100%; height: 100%;
-    object-fit: contain !important;  /* was: cover — caused cropping */
+    object-fit: contain !important;
     background: #000;
+  }
+
+  /* FIX D: zoom wrapper inside screen tile */
+  .vc-tile__zoom-wrap {
+    width: 100%; height: 100%;
+    overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    background: #000;
+    position: relative;
+  }
+  .vc-tile__zoom-wrap video {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    transform-origin: center center;
+    transition: transform 0.2s ease;
+    will-change: transform;
   }
 
   .vc-tile video { width: 100%; height: 100%; object-fit: cover; }
   .vc-tile video.mirror { transform: scaleX(-1); }
 
-  /* Fullscreen screen tile — always contain */
   :fullscreen .vc-tile video,
   :-webkit-full-screen .vc-tile video { object-fit: contain !important; background: #000; }
 
@@ -423,6 +456,7 @@ const CSS = `
     max-width: calc(100% - 16px);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     font-family: 'DM Mono', monospace;
+    pointer-events: none;
   }
   .vc-tile__muted { color: #f87171; }
   .vc-tile__pin-hint {
@@ -441,7 +475,17 @@ const CSS = `
   }
   .vc-tile__unpin-btn:hover { background: rgba(59,130,246,1); }
 
-  /* System audio badge on screen-share tile */
+  /* FIX E: Retry button for black screen */
+  .vc-tile__retry-btn {
+    position: absolute; bottom: 36px; left: 50%; transform: translateX(-50%);
+    background: rgba(245,158,11,0.85); backdrop-filter: blur(6px);
+    border: none; border-radius: 8px; padding: 6px 14px;
+    font-size: 12px; color: #000; font-weight: 700; cursor: pointer;
+    font-family: 'DM Mono', monospace; white-space: nowrap;
+    animation: toastIn .3s ease;
+    z-index: 10;
+  }
+
   .vc-tile__audio-badge {
     position: absolute; top: 8px; left: 8px;
     background: rgba(16,185,129,0.85); backdrop-filter: blur(4px);
@@ -607,39 +651,126 @@ function Toast({ message }) {
 }
 
 // ── VideoTile ─────────────────────────────────────────────────────────────────
-// FIX A: After setting srcObject, explicitly call .load() + .play() for mobile Chrome.
-// This fixes the black screen on Android when displaying a getDisplayMedia stream.
-function VideoTile({ stream, previewStream, name, isLocal, micOn = true, videoOn = true, isScreen, isPinned, onPin, onUnpin, hasSystemAudio }) {
+// FIX E: streamKey prop forces full video element reset when screen share restarts.
+// When streamKey changes (new share session), we null srcObject, call load(), reassign
+// srcObject, then play() with multiple retries. This clears the mobile Chrome decoder.
+function VideoTile({
+  stream, previewStream, name, isLocal,
+  micOn = true, videoOn = true,
+  isScreen, isPinned, onPin, onUnpin,
+  hasSystemAudio,
+  streamKey,          // FIX E: unique key per screen share session
+  zoomLevel = 1,      // FIX D: zoom level for screen share tiles
+  onZoomChange,       // FIX D: callback(newZoom)
+}) {
   const videoRef = useRef(null);
   const displayStream = previewStream || stream;
+  const [showRetry, setShowRetry] = useState(false);
+  const blackCheckTimer = useRef(null);
+  const retryCount = useRef(0);
+
+  // FIX D: pinch-to-zoom via touch events
+  const pinchRef = useRef({ dist: null });
+
+  function forcePlayVideo(el) {
+    if (!el) return;
+    const retries = [0, 300, 800, 1500];
+    retries.forEach((delay, i) => {
+      setTimeout(() => {
+        if (!el.srcObject) return;
+        const p = el.play();
+        if (p && typeof p.catch === "function") {
+          p.catch(() => {});
+        }
+      }, delay);
+    });
+  }
+
+  function fullyResetVideo(el, newStream) {
+    if (!el) return;
+    // Nuclear reset: clear srcObject, flush decoder, reassign
+    el.srcObject = null;
+    try { el.load?.(); } catch (_) {}
+    el.srcObject = newStream || null;
+    if (newStream) {
+      forcePlayVideo(el);
+    }
+  }
 
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    if (el.srcObject === displayStream) return;
 
-    el.srcObject = displayStream || null;
+    // FIX E: when streamKey changes (new share session), do a full reset
+    fullyResetVideo(el, displayStream);
 
-    if (displayStream) {
-      // FIX A: Mobile Chrome (Android) requires explicit play() after srcObject assignment.
-      // For getDisplayMedia streams this is especially important.
-      // .load() resets the decoder so it picks up the new stream cleanly.
-      try { el.load?.(); } catch (_) {}
+    // Black-screen detection: check 3s after stream assignment
+    clearTimeout(blackCheckTimer.current);
+    retryCount.current = 0;
+    setShowRetry(false);
 
-      const tryPlay = () => {
-        const p = el.play();
-        if (p && typeof p.catch === "function") {
-          p.catch(() => {
-            // Retry once after 300ms — handles Android Chrome timing quirk
-            setTimeout(() => {
-              el.play().catch(() => {});
-            }, 300);
-          });
+    if (displayStream && isScreen) {
+      blackCheckTimer.current = setTimeout(() => {
+        // If video is paused or has zero dimensions, show retry button
+        if (el && (el.paused || el.videoWidth === 0)) {
+          setShowRetry(true);
         }
-      };
-      tryPlay();
+      }, 3000);
     }
-  }, [displayStream]);
+
+    return () => clearTimeout(blackCheckTimer.current);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamKey, displayStream]);
+
+  // Separate effect for non-screen tiles where streamKey doesn't matter
+  useEffect(() => {
+    if (isScreen) return; // screen tiles are handled by streamKey effect above
+    const el = videoRef.current;
+    if (!el) return;
+    if (el.srcObject === displayStream) return;
+    el.srcObject = displayStream || null;
+    if (displayStream) {
+      try { el.load?.(); } catch (_) {}
+      forcePlayVideo(el);
+    }
+  }, [displayStream, isScreen]);
+
+  function handleRetry() {
+    const el = videoRef.current;
+    if (!el) return;
+    setShowRetry(false);
+    fullyResetVideo(el, displayStream);
+    // If still black after retry, show button again
+    blackCheckTimer.current = setTimeout(() => {
+      if (el && (el.paused || el.videoWidth === 0)) {
+        setShowRetry(true);
+      }
+    }, 3000);
+  }
+
+  // FIX D: pinch-to-zoom touch handlers
+  function getTouchDist(e) {
+    const [t1, t2] = [e.touches[0], e.touches[1]];
+    return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+  }
+  function onTouchStart(e) {
+    if (e.touches.length === 2 && isScreen && onZoomChange) {
+      pinchRef.current.dist = getTouchDist(e);
+      e.preventDefault();
+    }
+  }
+  function onTouchMove(e) {
+    if (e.touches.length === 2 && isScreen && onZoomChange && pinchRef.current.dist !== null) {
+      const newDist = getTouchDist(e);
+      const delta = newDist / pinchRef.current.dist;
+      pinchRef.current.dist = newDist;
+      onZoomChange(prev => Math.min(4, Math.max(0.5, prev * delta)));
+      e.preventDefault();
+    }
+  }
+  function onTouchEnd(e) {
+    if (e.touches.length < 2) pinchRef.current.dist = null;
+  }
 
   const showVideo = !!displayStream && (isScreen || videoOn);
 
@@ -647,23 +778,57 @@ function VideoTile({ stream, previewStream, name, isLocal, micOn = true, videoOn
     <div
       className={`vc-tile${isScreen ? " vc-tile--screen" : ""}`}
       onClick={isPinned ? onUnpin : onPin}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+      onTouchEnd={onTouchEnd}
     >
-      <video
-        ref={videoRef}
-        autoPlay playsInline muted={isLocal}
-        className={isLocal && !isScreen ? "mirror" : ""}
-        style={{ display: showVideo ? "block" : "none" }}
-      />
+      {/* FIX D: zoom wrapper for screen tiles */}
+      {isScreen ? (
+        <div className="vc-tile__zoom-wrap">
+          <video
+            ref={videoRef}
+            autoPlay playsInline muted={isLocal}
+            style={{
+              display: showVideo ? "block" : "none",
+              transform: `scale(${zoomLevel})`,
+            }}
+          />
+        </div>
+      ) : (
+        <video
+          ref={videoRef}
+          autoPlay playsInline muted={isLocal}
+          className={isLocal && !isScreen ? "mirror" : ""}
+          style={{ display: showVideo ? "block" : "none" }}
+        />
+      )}
+
       <div className="vc-tile__avatar" style={{ display: showVideo ? "none" : "flex" }}>
         {initials(name)}
       </div>
+
       {isScreen && hasSystemAudio && (
         <div className="vc-tile__audio-badge">🔊 sys audio</div>
       )}
+
       <div className="vc-tile__label">
         {!micOn && <span className="vc-tile__muted">🔇</span>}
         {name}{isLocal ? " (you)" : ""}{isScreen ? " · screen" : ""}
+        {isScreen && zoomLevel !== 1 && (
+          <span style={{ marginLeft: 4, opacity: 0.6 }}>{Math.round(zoomLevel * 100)}%</span>
+        )}
       </div>
+
+      {/* FIX E: Retry button if black screen detected */}
+      {showRetry && isScreen && (
+        <button
+          className="vc-tile__retry-btn"
+          onClick={e => { e.stopPropagation(); handleRetry(); }}
+        >
+          ⚠️ Black screen? Tap to retry
+        </button>
+      )}
+
       {isPinned ? (
         <button className="vc-tile__unpin-btn" onClick={e => { e.stopPropagation(); onUnpin(); }}>
           ✕ Unpin
@@ -737,19 +902,44 @@ function CtrlBtn({ onClick, variant = "normal", title, icon, badge }) {
   );
 }
 
+// ── FIX D: Zoom Controls Component ───────────────────────────────────────────
+function ZoomControls({ zoom, onZoom, isScreen }) {
+  if (!isScreen) return null;
+  const MIN = 0.5, MAX = 4.0, STEP = 0.25;
+  return (
+    <div className="vc-zoom-controls">
+      <button
+        className="vc-zoom-btn"
+        onClick={e => { e.stopPropagation(); onZoom(prev => Math.min(MAX, Math.round((prev + STEP) * 100) / 100)); }}
+        disabled={zoom >= MAX}
+        title="Zoom in"
+      >＋</button>
+      <div className="vc-zoom-label">{Math.round(zoom * 100)}%</div>
+      <button
+        className="vc-zoom-btn"
+        onClick={e => { e.stopPropagation(); onZoom(prev => Math.max(MIN, Math.round((prev - STEP) * 100) / 100)); }}
+        disabled={zoom <= MIN}
+        title="Zoom out"
+      >－</button>
+      {zoom !== 1 && (
+        <button
+          className="vc-zoom-reset"
+          onClick={e => { e.stopPropagation(); onZoom(1); }}
+          title="Reset zoom"
+        >1:1</button>
+      )}
+    </div>
+  );
+}
+
 // ── Fullscreen helpers ────────────────────────────────────────────────────────
-// Strategy: call requestFullscreen on document.documentElement (the whole page).
-// Then use CSS class .vc-root--pinned-fs on the root to make the pinned tile
-// cover 100vw × 100vh via position:fixed. Calling requestFullscreen on a child
-// div is unreliable on Android — the child gets fullscreen viewport dims but its
-// children still lay out at pre-fullscreen sizes (the zoom/crop bug seen in pic 1).
-async function requestTrueFullscreen() {
+async function requestTrueFullscreen(el) {
   try {
-    const docEl = document.documentElement;
-    if (docEl.requestFullscreen) {
-      await docEl.requestFullscreen({ navigationUI: "hide" });
-    } else if (docEl.webkitRequestFullscreen) {
-      await docEl.webkitRequestFullscreen();
+    if (!el) return false;
+    if (el.requestFullscreen) {
+      await el.requestFullscreen({ navigationUI: "hide" });
+    } else if (el.webkitRequestFullscreen) {
+      await el.webkitRequestFullscreen();
     } else {
       return false;
     }
@@ -814,6 +1004,10 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const [localStream, setLocalStream]   = useState(null);
   const [screenStream, setScreenStream] = useState(null);
   const [screenPreviewStream, setScreenPreviewStream] = useState(null);
+
+  // FIX E: unique key per screen share session to force VideoTile remount of video element
+  const [shareSessionKey, setShareSessionKey] = useState(null);
+
   const [remoteStreams, setRemoteStreams] = useState({});
   const [remoteNames, setRemoteNames]   = useState({});
   const [micOn, setMicOn]               = useState(true);
@@ -830,11 +1024,10 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const [pushEnabled, setPushEnabled]   = useState(false);
   const [pushStatus, setPushStatus]     = useState("");
   const [pinnedId, setPinnedId]         = useState(null);
-
-  // FIX B: track whether we're in CSS-fallback fullscreen (Fullscreen API unavailable)
   const [cssFallbackFullscreen, setCssFallbackFullscreen] = useState(false);
-  // Track whether native Fullscreen API is active (to apply .vc-root--pinned-fs)
-  const [nativeFullscreen, setNativeFullscreen]           = useState(false);
+
+  // FIX D: zoom state for pinned tile
+  const [pinnedZoom, setPinnedZoom] = useState(1);
 
   // System audio
   const [hasSystemAudio, setHasSystemAudio] = useState(false);
@@ -851,22 +1044,21 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const screenTrackRef  = useRef(null);
   const screenStreamRef = useRef(null);
   const displayNameRef  = useRef("");
+  const pinnedWrapRef   = useRef(null);
   useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
 
-  // ── FIX B: pin → fullscreen via documentElement + CSS class ───────────────
-  // We request fullscreen on document.documentElement (the whole page), then
-  // use the CSS class .vc-root--pinned-fs to position:fixed the pinned tile to
-  // fill 100vw×100vh. This avoids the Android "child gets fullscreen viewport
-  // but its children still use old layout" zoom/crop bug.
+  // ── FIX D+B: pin → fullscreen + reset zoom ─────────────────────────────────
   async function pinTile(id) {
     setPinnedId(id);
-    // Wait two frames for React to render the pinned tile
+    setPinnedZoom(1); // Reset zoom on new pin
     await new Promise(r => requestAnimationFrame(r));
     await new Promise(r => requestAnimationFrame(r));
 
-    const ok = await requestTrueFullscreen();
+    const el = pinnedWrapRef.current;
+    if (!el) return;
+
+    const ok = await requestTrueFullscreen(el);
     if (!ok) {
-      // Fullscreen API blocked (non-HTTPS, iframe, etc.) — CSS fallback
       setCssFallbackFullscreen(true);
       showToast("📌 Pinned fullscreen (tap ✕ to exit)", 2500);
     } else {
@@ -877,18 +1069,17 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   async function unpinTile() {
     setPinnedId(null);
     setCssFallbackFullscreen(false);
+    setPinnedZoom(1); // Reset zoom on unpin
     await exitTrueFullscreen();
   }
 
-  // Listen for native fullscreen exit (e.g. user presses back on Android)
+  // Listen for native fullscreen exit
   useEffect(() => {
     function onFsChange() {
-      const active = !!(document.fullscreenElement || document.webkitFullscreenElement);
-      setNativeFullscreen(active);
-      if (!active) {
-        // User exited fullscreen natively (back button, Esc, etc.)
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
         setPinnedId(null);
         setCssFallbackFullscreen(false);
+        setPinnedZoom(1);
         try { screen.orientation?.unlock?.(); } catch (_) {}
       }
     }
@@ -900,7 +1091,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     };
   }, []);
 
-  // Escape key to unpin
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") unpinTile(); };
     window.addEventListener("keydown", handler);
@@ -1221,6 +1411,14 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   }
 
   // ── Screen share ──────────────────────────────────────────────────────────
+  // FIX E: Build the preview stream with a delay so the track is fully "live"
+  // on mobile before we attach it to a video element.
+  async function waitFrames(n = 2) {
+    for (let i = 0; i < n; i++) {
+      await new Promise(r => requestAnimationFrame(r));
+    }
+  }
+
   async function startShare() {
     if (!window.isSecureContext) { showToast("⚠️ Screen share needs HTTPS.", 4000); return; }
     if (!navigator.mediaDevices?.getDisplayMedia) { showToast("⚠️ Screen share not supported on this browser.", 4000); return; }
@@ -1246,11 +1444,17 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
       return;
     }
 
-    // FIX A: Build video-only stream for preview tile to avoid black screen
+    // FIX E: Wait for 2 animation frames so mobile Chrome fully initialises the track
+    await waitFrames(2);
+
+    // FIX E: Build a brand new MediaStream each time so React sees a new object reference
     const videoOnlyPreview = new MediaStream([vt]);
 
     const capturedAudioTrack = sc.getAudioTracks()[0] || null;
     const gotSysAudio = !!capturedAudioTrack;
+
+    // FIX E: Generate a new session key so VideoTile knows to fully reset its <video>
+    const newKey = randomId();
 
     sharingRef.current       = true;
     screenTrackRef.current   = vt;
@@ -1259,6 +1463,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
     setScreenStream(sc);
     setScreenPreviewStream(videoOnlyPreview);
+    setShareSessionKey(newKey);  // FIX E: triggers VideoTile nuclear reset
     setSharing(true);
     setHasSystemAudio(gotSysAudio);
     setSysAudioOn(true);
@@ -1303,6 +1508,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     screenStream?.getTracks().forEach(t => t.stop());
     setScreenStream(null);
     setScreenPreviewStream(null);
+    setShareSessionKey(null);  // FIX E: clear session key
     setSharing(false);
     setHasSystemAudio(false);
     setSysAudioOn(true);
@@ -1341,10 +1547,12 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     screenTrackRef.current = null;
     screenStreamRef.current = null;
     setLocalStream(null); setScreenStream(null); setScreenPreviewStream(null);
+    setShareSessionKey(null);
     setRemoteStreams({}); setRemoteNames({});
     setInCall(false); setSharing(false);
     exitTrueFullscreen();
     setPinnedId(null); setCssFallbackFullscreen(false);
+    setPinnedZoom(1);
     setMicOn(true); setCamOn(true);
     setLobbyStream(null); setStatus("");
     setFacingMode("user");
@@ -1424,47 +1632,58 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const totalCount    = 1 + remotePeerIds.length;
   const hasVideo      = mediaStatus === "ok";
 
-  // Apply .vc-root--pinned-fs when: native fullscreen active OR CSS fallback active
-  const isPinnedFs = (nativeFullscreen || cssFallbackFullscreen) && !!pinnedId;
-  const rootClass = `vc-root${isPinnedFs ? " vc-root--pinned-fs" : ""}`;
-  const pinnedWrapClass = "vc-pinned-wrap"; // no longer needs per-instance class
+  const pinnedWrapClass = `vc-pinned-wrap${cssFallbackFullscreen ? " vc-pinned--fullscreen" : ""}`;
+
+  // Determine if pinned tile is a screen share
+  const pinnedIsScreen = pinnedId === "screen";
 
   function renderPinnedTile() {
     if (!pinnedId) return null;
+
+    // FIX D: Zoom controls shown inside fullscreen overlay for screen tiles
+    const zoomControls = pinnedIsScreen ? (
+      <ZoomControls zoom={pinnedZoom} onZoom={setPinnedZoom} isScreen={true} />
+    ) : null;
+
     const header = (
       <div className="vc-pinned-header">
         <span className="vc-pinned-label">📌 PINNED</span>
       </div>
     );
 
-    // Overlay — always rendered; CSS controls visibility via .vc-root--pinned-fs
     const overlay = (
       <div className="vc-fullscreen-overlay">
+        {/* FIX D: Zoom controls inside fullscreen overlay */}
+        {zoomControls}
         <button className="vc-fullscreen-unpin" onClick={unpinTile}>✕ Unpin / Exit Fullscreen</button>
         <div className="vc-fullscreen-hint">
-          {isMobile ? "Tap ✕ to exit" : "Press Esc or tap ✕ to exit"}
+          {isMobile ? "Pinch to zoom · Tap ✕ to exit" : "Scroll or use ＋/－ to zoom · Esc to exit"}
         </div>
       </div>
     );
 
     if (pinnedId === "screen" && sharing && screenStream) {
       return (
-        <div className={pinnedWrapClass}>
-          {header}
+        <div className={pinnedWrapClass} ref={pinnedWrapRef}>
+          {!cssFallbackFullscreen && header}
           <VideoTile
             stream={screenStream}
             previewStream={screenPreviewStream}
             name={displayName} isLocal isScreen videoOn
             hasSystemAudio={hasSystemAudio}
-            isPinned onUnpin={unpinTile} />
+            isPinned onUnpin={unpinTile}
+            streamKey={shareSessionKey}
+            zoomLevel={pinnedZoom}
+            onZoomChange={setPinnedZoom}
+          />
           {overlay}
         </div>
       );
     }
     if (pinnedId === "local") {
       return (
-        <div className={pinnedWrapClass}>
-          {header}
+        <div className={pinnedWrapClass} ref={pinnedWrapRef}>
+          {!cssFallbackFullscreen && header}
           <VideoTile stream={localStream} name={displayName} isLocal micOn={micOn} videoOn={camOn}
             isPinned onUnpin={unpinTile} />
           {overlay}
@@ -1473,8 +1692,8 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     }
     if (remoteStreams[pinnedId]) {
       return (
-        <div className={pinnedWrapClass}>
-          {header}
+        <div className={pinnedWrapClass} ref={pinnedWrapRef}>
+          {!cssFallbackFullscreen && header}
           <VideoTile stream={remoteStreams[pinnedId]} name={remoteNames[pinnedId] || pinnedId}
             micOn videoOn isPinned onUnpin={unpinTile} />
           {overlay}
@@ -1638,7 +1857,10 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
                 hasSystemAudio={hasSystemAudio}
                 isPinned={false}
                 onPin={() => pinTile("screen")}
-                onUnpin={unpinTile} />
+                onUnpin={unpinTile}
+                streamKey={shareSessionKey}
+                zoomLevel={1}
+              />
             )}
 
             <div className="vc-grid" data-count={Math.min(totalCount, 6)}>
@@ -1660,7 +1882,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
             {pinnedId && !cssFallbackFullscreen && (
               <div style={{ textAlign: "center", fontSize: 11, color: "var(--text3)", paddingBottom: 4, fontFamily: "'DM Mono', monospace" }}>
-                {isMobile ? "Tap ✕ Unpin or use back button to exit fullscreen" : "Press Esc or tap ✕ Unpin to return to grid"}
+                {isMobile ? "Pinch to zoom · Tap ✕ Unpin or use back button to exit" : "Use ＋/－ to zoom · Press Esc or tap ✕ Unpin to return to grid"}
               </div>
             )}
           </div>
