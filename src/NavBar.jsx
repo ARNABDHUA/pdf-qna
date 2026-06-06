@@ -1,9 +1,4 @@
-/* NavBar.jsx  –  Global navigation for QNA-AI
-   Import this into each page (App, User, FileConverter, etc.)
-   and render <NavBar currentPath="/expenses" /> at the top.
-
-   Styled to match the existing dark theme of the app.
-*/
+/* NavBar.jsx  –  Global navigation for QNA-AI */
 
 import React, { useState } from "react";
 
@@ -14,6 +9,7 @@ const ROUTES = [
   { path: "/youtube",   label: "YouTube",     icon: "▶️", desc: "Transcript → PDF"   },
   { path: "/expenses",  label: "Expenses",    icon: "💸", desc: "AI expense tracker" },
   { path: "/codeshare", label: "CodeShare",   icon: "📎", desc: "Share code snippets"},
+  { path: "/meet",      label: "Meet",        icon: "📹", desc: "Video call & screen share" },
 ];
 
 export default function NavBar({ currentPath = "/" }) {

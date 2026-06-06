@@ -5,29 +5,28 @@ import './index.css'
 import App from './App.jsx'
 import User from './User.jsx'
 import FileConverter from './FileConverter.jsx'
-import CollabSession from "./CollabSession";
-import YouTubeConverter from "./YouTubeConverter";
-import ExpenseTracker from "./ExpenseTracker";
-import CodeShare from "./CodeShare";
-import NavBar    from "./NavBar";
+import CollabSession from "./CollabSession"
+import YouTubeConverter from "./YouTubeConverter"
+import ExpenseTracker from "./ExpenseTracker"
+import CodeShare from "./CodeShare"
+import NavBar from "./NavBar"
+import VideoCall from "./VideoCall"
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <BrowserRouter>
       <Routes>
-
-        {/* Main chat page */}
-        <Route path="/"          element={<App />} />
-        <Route path="/review"          element={<User />} />
-        <Route path="/converter"          element={<FileConverter />} />
+        <Route path="/"                  element={<App />} />
+        <Route path="/review"            element={<User />} />
+        <Route path="/converter"         element={<FileConverter />} />
         <Route path="/collab/:sessionId" element={<CollabSession />} />
-        <Route path="/youtube" element={<YouTubeConverter />} />
-        <Route path="/expenses" element={<ExpenseTracker />} />
-        <Route path="/codeshare"    element={<CodeShare />} />
-        <Route path="/codeshare/:id" element={<CodeShare />} />
+        <Route path="/youtube"           element={<YouTubeConverter />} />
+        <Route path="/expenses"          element={<ExpenseTracker />} />
+        <Route path="/codeshare"         element={<CodeShare />} />
+        <Route path="/codeshare/:id"     element={<CodeShare />} />
+        <Route path="/meet"              element={<VideoCall backendUrl="https://pdf-qna-backend.onrender.com" />} />
 
         <Route path="*" element={<Navigate to="/" replace />} />
-
       </Routes>
     </BrowserRouter>
   </StrictMode>,
