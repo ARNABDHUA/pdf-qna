@@ -28,6 +28,7 @@
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import NavBar from "./NavBar";
 
 const ICE_SERVERS = {
   iceServers: [
@@ -1703,6 +1704,8 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
   // ── LOBBY ─────────────────────────────────────────────────────────────────
   if (!inCall) return (
+    <>
+    <NavBar currentPath="/meet" />
     <div className="vc-root">
       <style>{CSS}</style>
       <Toast message={toast} />
@@ -1822,6 +1825,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
         </div>
       </div>
     </div>
+    </>
   );
 
   // ── IN CALL ───────────────────────────────────────────────────────────────
