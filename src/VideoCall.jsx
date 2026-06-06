@@ -1,36 +1,30 @@
 /**
- * VideoCall.jsx – v4
+ * VideoCall.jsx – v5
  *
- * FIXES & NEW FEATURES vs v3:
+ * FIXES vs v4:
  *
- * FIX 1 — Black screen when sharing with system audio (Windows)
+ * FIX A — Black screen on mobile screen share (Android Chrome)
  * ──────────────────────────────────────────────────────────────────────────────
- * Root cause: Chrome's getDisplayMedia stream contains BOTH a video track and an
- * audio track (system audio). Passing this mixed stream directly as <video>.srcObject
- * causes Chrome to render black — it gets confused by the audio track in a video element.
- * Fix: always build a video-only MediaStream (new MediaStream([videoTrack])) for the
- * local screen-share preview tile. The full stream is still used for peer track sending.
- * The system audio track is sent to peers separately via its own RTCRtpSender.
+ * Root cause: On Android Chrome, setting <video>.srcObject on a getDisplayMedia
+ * stream is not enough — you MUST call .play() explicitly after assignment.
+ * Chrome on desktop auto-plays, but mobile Chrome requires the explicit call.
+ * Also calling .load() first resets any stale decoder state.
+ * Fix: In VideoTile useEffect, after srcObject assignment:
+ *   el.load?.()  →  el.play().catch(() => setTimeout(() => el.play(), 300))
  *
- * FIX 2 — Mobile screen share black/broken (Android Chrome)
+ * FIX B — True fullscreen when pinning on mobile
  * ──────────────────────────────────────────────────────────────────────────────
- * getDisplayMedia must be the FIRST awaited call after user gesture on Android Chrome.
- * No async guards before it. Constraints simplified to { video: true, audio: true }.
+ * Old behaviour: fullscreen only activated on physical landscape tilt via CSS class.
+ * New behaviour: when ANY tile is pinned on mobile, we call requestFullscreen() on
+ * the pinned tile's DOM element immediately, then lock orientation to landscape.
+ * When unpinned, we call exitFullscreen() and unlock orientation.
+ * Fallback (if Fullscreen API unavailable): the old CSS fixed-positioning approach
+ * is kept as backup, now triggered by pinnedId state (not orientation).
  *
- * FEATURE — Auto-rotate on phone tilt (replaces manual landscape button)
+ * FIX C — Screen share shows full content (no cropping)
  * ──────────────────────────────────────────────────────────────────────────────
- * Instead of a manual "Rotate to landscape" button, the app now listens to the
- * screen.orientation "change" event. When the user physically tilts their phone to
- * landscape, the UI automatically unlocks and re-locks orientation to follow the tilt.
- * When they tilt back to portrait, it follows back. This is done by:
- *   1. NOT locking orientation at all (letting the browser follow the device naturally)
- *   2. When in-call on mobile, listening to screen.orientation.change and updating a
- *      CSS class on the root that transforms the pinned tile to fill the screen in
- *      landscape without needing the Orientation Lock API (which is often blocked).
- *   3. As a progressive enhancement: if screen.orientation.lock IS available (Android
- *      Chrome installed PWA, some Samsung browsers), we lock to the current orientation
- *      on each change event so the content doesn't snap back.
- * The manual rotate button is completely removed.
+ * object-fit: cover crops the screen share. Changed to object-fit: contain so
+ * the entire shared screen is visible inside the tile (letterboxed if needed).
  */
 
 import { useState, useEffect, useRef, useCallback } from "react";
@@ -85,13 +79,6 @@ function buildShareLink(roomId) {
   const url = new URL(window.location.href);
   url.searchParams.set("room", roomId);
   return url.toString();
-}
-
-// Returns true if current orientation is landscape
-function isLandscape() {
-  if (typeof screen === "undefined") return false;
-  if (screen.orientation) return screen.orientation.type.startsWith("landscape");
-  return window.innerWidth > window.innerHeight;
 }
 
 const CSS = `
@@ -280,7 +267,11 @@ const CSS = `
     padding-bottom: 12px; display: flex; flex-direction: column; gap: 10px;
   }
 
-  /* Pinned tile — landscape-aware on mobile */
+  /* ── PINNED TILE ──
+   * FIX B: fullscreen is now handled via the Fullscreen API (requestFullscreen).
+   * The CSS fallback below handles the case where Fullscreen API is unavailable —
+   * it uses position:fixed to fill the screen when .vc-pinned--fullscreen is applied.
+   */
   .vc-pinned-wrap { width: 100%; flex-shrink: 0; position: relative; }
   .vc-pinned-wrap .vc-tile {
     aspect-ratio: 16/9;
@@ -288,42 +279,52 @@ const CSS = `
     box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
   }
 
-  /*
-   * AUTO-ROTATE: when phone is landscape, expand pinned tile to fill viewport.
-   * We apply .vc-root--landscape on the root when orientation changes to landscape.
-   * This is pure CSS — no orientation lock API needed, no permissions, works everywhere.
-   */
-  .vc-root--landscape .vc-pinned-wrap .vc-tile {
-    position: fixed;
-    inset: 0;
-    width: 100vw;
-    height: 100vh;
-    border-radius: 0;
-    aspect-ratio: unset;
-    z-index: 500;
-    border: none;
-    box-shadow: none;
+  /* CSS fallback fullscreen (used when Fullscreen API is blocked) */
+  .vc-pinned--fullscreen .vc-tile {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    border-radius: 0 !important;
+    aspect-ratio: unset !important;
+    z-index: 500 !important;
+    border: none !important;
+    box-shadow: none !important;
   }
-  /* Hide all other UI elements when landscape + pinned so the tile is truly full screen */
-  .vc-root--landscape .vc-header,
-  .vc-root--landscape .vc-controls,
-  .vc-root--landscape .vc-sidebar,
-  .vc-root--landscape .vc-grid,
-  .vc-root--landscape .vc-pinned-header {
-    display: none !important;
-  }
-  /* Tap-to-exit hint in landscape */
-  .vc-landscape-hint {
+  .vc-pinned--fullscreen ~ .vc-header,
+  .vc-pinned--fullscreen ~ .vc-controls { display: none !important; }
+
+  /* Overlay controls shown inside fullscreen tile */
+  .vc-fullscreen-overlay {
     display: none;
-    position: fixed; top: 12px; left: 50%; transform: translateX(-50%);
-    background: rgba(0,0,0,0.6); backdrop-filter: blur(6px);
-    border-radius: 8px; padding: 5px 14px;
-    font-size: 12px; color: rgba(255,255,255,0.7);
-    z-index: 600; pointer-events: none;
-    font-family: 'DM Mono', monospace;
-    white-space: nowrap;
+    position: fixed; inset: 0; z-index: 510;
+    pointer-events: none;
   }
-  .vc-root--landscape .vc-landscape-hint { display: block; }
+  /* Show overlay when in CSS fallback fullscreen */
+  .vc-pinned--fullscreen .vc-fullscreen-overlay { display: block; }
+  /* Always show overlay when document is in true fullscreen */
+  :fullscreen .vc-fullscreen-overlay,
+  :-webkit-full-screen .vc-fullscreen-overlay { display: block; }
+
+  .vc-fullscreen-unpin {
+    position: absolute; top: 14px; right: 14px;
+    background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
+    border: 1px solid rgba(255,255,255,0.15); border-radius: 8px;
+    padding: 8px 14px; color: #fff; font-size: 13px; font-weight: 700;
+    cursor: pointer; pointer-events: all;
+    font-family: 'DM Mono', monospace;
+    transition: background .15s;
+  }
+  .vc-fullscreen-unpin:hover { background: rgba(59,130,246,0.7); }
+
+  .vc-fullscreen-hint {
+    position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.55); backdrop-filter: blur(6px);
+    border-radius: 8px; padding: 5px 14px;
+    font-size: 12px; color: rgba(255,255,255,0.6);
+    font-family: 'DM Mono', monospace; white-space: nowrap;
+    pointer-events: none;
+  }
 
   .vc-pinned-header {
     display: flex; align-items: center; justify-content: flex-end;
@@ -365,9 +366,21 @@ const CSS = `
   }
   .vc-tile:hover { border-color: rgba(59,130,246,0.4); }
   .vc-tile:hover .vc-tile__pin-hint { opacity: 1; }
+
+  /* FIX C: screen share tiles use contain so full content is visible */
   .vc-tile--screen { aspect-ratio: 16/9; }
+  .vc-tile--screen video {
+    width: 100%; height: 100%;
+    object-fit: contain !important;  /* was: cover — caused cropping */
+    background: #000;
+  }
+
   .vc-tile video { width: 100%; height: 100%; object-fit: cover; }
   .vc-tile video.mirror { transform: scaleX(-1); }
+
+  /* Fullscreen screen tile — always contain */
+  :fullscreen .vc-tile video,
+  :-webkit-full-screen .vc-tile video { object-fit: contain !important; background: #000; }
 
   .vc-tile__avatar {
     position: absolute; width: 52px; height: 52px; border-radius: 50%;
@@ -569,18 +582,38 @@ function Toast({ message }) {
 }
 
 // ── VideoTile ─────────────────────────────────────────────────────────────────
-// FIX 1: accepts a separate `previewStream` for the local screen-share tile.
-// previewStream is a video-only MediaStream built from just the video track.
-// This prevents Chrome from rendering black when the full stream has audio tracks.
+// FIX A: After setting srcObject, explicitly call .load() + .play() for mobile Chrome.
+// This fixes the black screen on Android when displaying a getDisplayMedia stream.
 function VideoTile({ stream, previewStream, name, isLocal, micOn = true, videoOn = true, isScreen, isPinned, onPin, onUnpin, hasSystemAudio }) {
   const videoRef = useRef(null);
-  // Use previewStream for display if provided, else fall back to full stream
   const displayStream = previewStream || stream;
 
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
-    if (el.srcObject !== displayStream) el.srcObject = displayStream || null;
+    if (el.srcObject === displayStream) return;
+
+    el.srcObject = displayStream || null;
+
+    if (displayStream) {
+      // FIX A: Mobile Chrome (Android) requires explicit play() after srcObject assignment.
+      // For getDisplayMedia streams this is especially important.
+      // .load() resets the decoder so it picks up the new stream cleanly.
+      try { el.load?.(); } catch (_) {}
+
+      const tryPlay = () => {
+        const p = el.play();
+        if (p && typeof p.catch === "function") {
+          p.catch(() => {
+            // Retry once after 300ms — handles Android Chrome timing quirk
+            setTimeout(() => {
+              el.play().catch(() => {});
+            }, 300);
+          });
+        }
+      };
+      tryPlay();
+    }
   }, [displayStream]);
 
   const showVideo = !!displayStream && (isScreen || videoOn);
@@ -679,6 +712,40 @@ function CtrlBtn({ onClick, variant = "normal", title, icon, badge }) {
   );
 }
 
+// ── Fullscreen helpers ────────────────────────────────────────────────────────
+// FIX B: Use the Fullscreen API for true fullscreen on mobile.
+// Falls back to CSS fixed-position overlay if Fullscreen API is unavailable.
+async function requestTrueFullscreen(el) {
+  try {
+    if (!el) return false;
+    if (el.requestFullscreen) {
+      await el.requestFullscreen({ navigationUI: "hide" });
+    } else if (el.webkitRequestFullscreen) {
+      await el.webkitRequestFullscreen();
+    } else {
+      return false; // API not available, use CSS fallback
+    }
+    // Try locking to landscape (works on installed PWAs, some Android browsers)
+    try {
+      if (screen.orientation?.lock) await screen.orientation.lock("landscape");
+    } catch (_) { /* non-fatal */ }
+    return true;
+  } catch (e) {
+    console.warn("requestFullscreen failed:", e);
+    return false;
+  }
+}
+
+async function exitTrueFullscreen() {
+  try {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      if (document.exitFullscreen) await document.exitFullscreen();
+      else if (document.webkitExitFullscreen) await document.webkitExitFullscreen();
+    }
+    try { screen.orientation?.unlock?.(); } catch (_) {}
+  } catch (_) {}
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrender.com" }) {
   const urlRoom = getRoomFromUrl();
@@ -719,10 +786,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const [status, setStatus]             = useState("");
   const [localStream, setLocalStream]   = useState(null);
   const [screenStream, setScreenStream] = useState(null);
-
-  // FIX 1: separate video-only stream for the screen-share preview tile
   const [screenPreviewStream, setScreenPreviewStream] = useState(null);
-
   const [remoteStreams, setRemoteStreams] = useState({});
   const [remoteNames, setRemoteNames]   = useState({});
   const [micOn, setMicOn]               = useState(true);
@@ -740,58 +804,74 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const [pushStatus, setPushStatus]     = useState("");
   const [pinnedId, setPinnedId]         = useState(null);
 
+  // FIX B: track whether we're in CSS-fallback fullscreen (Fullscreen API unavailable)
+  const [cssFallbackFullscreen, setCssFallbackFullscreen] = useState(false);
+
   // System audio
   const [hasSystemAudio, setHasSystemAudio] = useState(false);
   const [sysAudioOn, setSysAudioOn]         = useState(true);
   const sysAudioTrackRef                     = useRef(null);
 
-  // AUTO-ROTATE: track whether phone is in landscape
-  const [inLandscape, setInLandscape] = useState(() => isLandscape());
-
-  const chatEndRef     = useRef(null);
-  const wsRef          = useRef(null);
-  const pcsRef         = useRef({});
-  const iceQRef        = useRef({});
-  const peerStreamsRef  = useRef({});
-  const localStreamRef = useRef(null);
-  const sharingRef     = useRef(false);
-  const screenTrackRef = useRef(null);
-  const screenStreamRef= useRef(null);
-  const displayNameRef = useRef("");
+  const chatEndRef      = useRef(null);
+  const wsRef           = useRef(null);
+  const pcsRef          = useRef({});
+  const iceQRef         = useRef({});
+  const peerStreamsRef   = useRef({});
+  const localStreamRef  = useRef(null);
+  const sharingRef      = useRef(false);
+  const screenTrackRef  = useRef(null);
+  const screenStreamRef = useRef(null);
+  const displayNameRef  = useRef("");
+  const pinnedWrapRef   = useRef(null); // FIX B: ref to the pinned tile wrapper for requestFullscreen
   useEffect(() => { displayNameRef.current = displayName; }, [displayName]);
 
-  // ── AUTO-ROTATE: listen to orientation changes ──────────────────────────────
-  // When the user physically tilts their phone, we detect it and apply CSS class.
-  // No orientation lock API needed — the browser already rotates the viewport.
-  // The CSS class .vc-root--landscape makes the pinned tile fill the screen.
-  useEffect(() => {
-    if (!isMobile) return;
+  // ── FIX B: pin → fullscreen, unpin → exit fullscreen ──────────────────────
+  async function pinTile(id) {
+    setPinnedId(id);
+    // Wait for the DOM to update so the pinned wrapper is rendered
+    await new Promise(r => requestAnimationFrame(r));
+    await new Promise(r => requestAnimationFrame(r));
 
-    function onOrientationChange() {
-      const landscape = isLandscape();
-      setInLandscape(landscape);
-      if (landscape && pinnedId) {
-        showToast("📱 Tilt back to exit fullscreen", 2000);
+    const el = pinnedWrapRef.current;
+    if (!el) return;
+
+    const ok = await requestTrueFullscreen(el);
+    if (!ok) {
+      // Fullscreen API not available — use CSS fallback
+      setCssFallbackFullscreen(true);
+      showToast("📌 Pinned fullscreen (tap ✕ to exit)", 2500);
+    } else {
+      showToast("📌 Fullscreen — tap ✕ Unpin to exit", 2500);
+    }
+  }
+
+  async function unpinTile() {
+    setPinnedId(null);
+    setCssFallbackFullscreen(false);
+    await exitTrueFullscreen();
+  }
+
+  // Listen for native fullscreen exit (e.g. user presses back on Android)
+  useEffect(() => {
+    function onFsChange() {
+      if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+        // User exited fullscreen natively
+        setPinnedId(null);
+        setCssFallbackFullscreen(false);
+        try { screen.orientation?.unlock?.(); } catch (_) {}
       }
     }
-
-    // screen.orientation API (Android Chrome, modern browsers)
-    if (screen.orientation) {
-      screen.orientation.addEventListener("change", onOrientationChange);
-      return () => screen.orientation.removeEventListener("change", onOrientationChange);
-    }
-    // Fallback: window resize / orientationchange event (older iOS)
-    window.addEventListener("orientationchange", onOrientationChange);
-    window.addEventListener("resize", onOrientationChange);
+    document.addEventListener("fullscreenchange", onFsChange);
+    document.addEventListener("webkitfullscreenchange", onFsChange);
     return () => {
-      window.removeEventListener("orientationchange", onOrientationChange);
-      window.removeEventListener("resize", onOrientationChange);
+      document.removeEventListener("fullscreenchange", onFsChange);
+      document.removeEventListener("webkitfullscreenchange", onFsChange);
     };
-  }, [isMobile, pinnedId]);
+  }, []);
 
   // Escape key to unpin
   useEffect(() => {
-    const handler = (e) => { if (e.key === "Escape") setPinnedId(null); };
+    const handler = (e) => { if (e.key === "Escape") unpinTile(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
@@ -968,7 +1048,10 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
         delete peerStreamsRef.current[msg.from];
         setRemoteStreams(p => { const n = { ...p }; delete n[msg.from]; return n; });
         setRemoteNames(p => { const n = { ...p }; delete n[msg.from]; return n; });
-        setPinnedId(prev => prev === msg.from ? null : prev);
+        setPinnedId(prev => {
+          if (prev === msg.from) { exitTrueFullscreen(); return null; }
+          return prev;
+        });
         break;
       case "offer":  handleOffer(msg); break;
       case "answer":
@@ -1009,7 +1092,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     if (audioTrack) pc.addTrack(audioTrack, stream);
     else pc.addTransceiver("audio", { direction: "sendrecv" });
 
-    // System audio as additional audio sender
     if (isSharing && sysAudioTrackRef.current) {
       const sysStream = screenStreamRef.current || new MediaStream([sysAudioTrackRef.current]);
       pc.addTrack(sysAudioTrackRef.current, sysStream);
@@ -1107,16 +1189,11 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     showToast(next ? "🔊 System audio on" : "🔇 System audio muted");
   }
 
-  // ── Screen share (FIX 1 + FIX 2) ─────────────────────────────────────────
+  // ── Screen share ──────────────────────────────────────────────────────────
   async function startShare() {
-    // Sync guards only — no awaits before getDisplayMedia (Android Chrome requirement)
     if (!window.isSecureContext) { showToast("⚠️ Screen share needs HTTPS.", 4000); return; }
     if (!navigator.mediaDevices?.getDisplayMedia) { showToast("⚠️ Screen share not supported on this browser.", 4000); return; }
 
-    // ── getDisplayMedia must be FIRST await after user gesture ──
-    // audio: true → Windows Chrome/Edge will show "Share system audio" checkbox
-    // systemAudio: 'include' → hints to default-check that box
-    // NO nested video object → required for Android Chrome compatibility
     let sc;
     try {
       sc = await navigator.mediaDevices.getDisplayMedia({
@@ -1125,7 +1202,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
         systemAudio: "include",
       });
     } catch (e) {
-      if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") return; // user cancelled
+      if (e.name === "NotAllowedError" || e.name === "PermissionDeniedError") return;
       console.error("getDisplayMedia failed:", e.name, e.message, e);
       showToast(`⚠️ Screen share failed (${e.name}). Try Chrome on desktop/Android.`, 5000);
       return;
@@ -1138,10 +1215,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
       return;
     }
 
-    // ── FIX 1: build a VIDEO-ONLY preview stream ──────────────────────────────
-    // Chrome renders a BLACK frame when a MediaStream with both video + audio tracks
-    // is set as <video>.srcObject. The fix: create a separate stream with ONLY the
-    // video track for the preview tile. The full stream (with audio) goes to peers.
+    // FIX A: Build video-only stream for preview tile to avoid black screen
     const videoOnlyPreview = new MediaStream([vt]);
 
     const capturedAudioTrack = sc.getAudioTracks()[0] || null;
@@ -1152,14 +1226,12 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     screenStreamRef.current  = sc;
     sysAudioTrackRef.current = capturedAudioTrack;
 
-    // Store full stream for peer sending; preview stream for local display
     setScreenStream(sc);
     setScreenPreviewStream(videoOnlyPreview);
     setSharing(true);
     setHasSystemAudio(gotSysAudio);
     setSysAudioOn(true);
 
-    // Replace video track on existing peer connections
     for (const pid of Object.keys(pcsRef.current)) {
       const pc = pcsRef.current[pid];
       const videoSender = pc.getSenders().find(s => s.track?.kind === "video");
@@ -1170,7 +1242,6 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
         await renegotiate(pid);
       }
 
-      // Add system audio track to peers if we captured one
       if (capturedAudioTrack) {
         const audioSenders = pc.getSenders().filter(s => s.track?.kind === "audio");
         if (audioSenders.length === 1) {
@@ -1204,7 +1275,8 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     setSharing(false);
     setHasSystemAudio(false);
     setSysAudioOn(true);
-    setPinnedId(prev => prev === "screen" ? null : prev);
+
+    if (pinnedId === "screen") await unpinTile();
 
     const cameraTrack = localStreamRef.current?.getVideoTracks()[0] ?? null;
     for (const pid of Object.keys(pcsRef.current)) {
@@ -1239,7 +1311,9 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
     screenStreamRef.current = null;
     setLocalStream(null); setScreenStream(null); setScreenPreviewStream(null);
     setRemoteStreams({}); setRemoteNames({});
-    setInCall(false); setSharing(false); setPinnedId(null);
+    setInCall(false); setSharing(false);
+    exitTrueFullscreen();
+    setPinnedId(null); setCssFallbackFullscreen(false);
     setMicOn(true); setCamOn(true);
     setLobbyStream(null); setStatus("");
     setFacingMode("user");
@@ -1319,45 +1393,59 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
   const totalCount    = 1 + remotePeerIds.length;
   const hasVideo      = mediaStatus === "ok";
 
-  // AUTO-ROTATE: apply landscape class only when: mobile + pinned tile + physically landscape
-  const rootClass = `vc-root${(isMobile && pinnedId && inLandscape) ? " vc-root--landscape" : ""}`;
+  // FIX B: The pinned wrapper gets the CSS fallback class when Fullscreen API failed
+  const pinnedWrapClass = `vc-pinned-wrap${cssFallbackFullscreen ? " vc-pinned--fullscreen" : ""}`;
 
   function renderPinnedTile() {
     if (!pinnedId) return null;
     const header = (
       <div className="vc-pinned-header">
-        <span className="vc-pinned-label">📌 PINNED{isMobile ? " · tilt for fullscreen" : ""}</span>
+        <span className="vc-pinned-label">📌 PINNED</span>
       </div>
     );
+
+    // Fullscreen overlay — shown in both true fullscreen and CSS fallback
+    const overlay = (
+      <div className="vc-fullscreen-overlay">
+        <button className="vc-fullscreen-unpin" onClick={unpinTile}>✕ Unpin / Exit Fullscreen</button>
+        <div className="vc-fullscreen-hint">
+          {isMobile ? "Tap ✕ to exit" : "Press Esc or tap ✕ to exit"}
+        </div>
+      </div>
+    );
+
     if (pinnedId === "screen" && sharing && screenStream) {
       return (
-        <div className="vc-pinned-wrap">
-          {header}
-          {/* FIX 1: use screenPreviewStream (video-only) for the tile display */}
+        <div className={pinnedWrapClass} ref={pinnedWrapRef}>
+          {!cssFallbackFullscreen && header}
+          {/* FIX A: use screenPreviewStream (video-only) for tile display */}
           <VideoTile
             stream={screenStream}
             previewStream={screenPreviewStream}
             name={displayName} isLocal isScreen videoOn
             hasSystemAudio={hasSystemAudio}
-            isPinned onUnpin={() => setPinnedId(null)} />
+            isPinned onUnpin={unpinTile} />
+          {overlay}
         </div>
       );
     }
     if (pinnedId === "local") {
       return (
-        <div className="vc-pinned-wrap">
-          {header}
+        <div className={pinnedWrapClass} ref={pinnedWrapRef}>
+          {!cssFallbackFullscreen && header}
           <VideoTile stream={localStream} name={displayName} isLocal micOn={micOn} videoOn={camOn}
-            isPinned onUnpin={() => setPinnedId(null)} />
+            isPinned onUnpin={unpinTile} />
+          {overlay}
         </div>
       );
     }
     if (remoteStreams[pinnedId]) {
       return (
-        <div className="vc-pinned-wrap">
-          {header}
+        <div className={pinnedWrapClass} ref={pinnedWrapRef}>
+          {!cssFallbackFullscreen && header}
           <VideoTile stream={remoteStreams[pinnedId]} name={remoteNames[pinnedId] || pinnedId}
-            micOn videoOn isPinned onUnpin={() => setPinnedId(null)} />
+            micOn videoOn isPinned onUnpin={unpinTile} />
+          {overlay}
         </div>
       );
     }
@@ -1366,7 +1454,7 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
   // ── LOBBY ─────────────────────────────────────────────────────────────────
   if (!inCall) return (
-    <div className={rootClass}>
+    <div className="vc-root">
       <style>{CSS}</style>
       <Toast message={toast} />
       <div className="vc-lobby">
@@ -1489,11 +1577,9 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
 
   // ── IN CALL ───────────────────────────────────────────────────────────────
   return (
-    <div className={rootClass}>
+    <div className="vc-root">
       <style>{CSS}</style>
       <Toast message={toast} />
-      {/* AUTO-ROTATE hint overlay shown when landscape + pinned */}
-      <div className="vc-landscape-hint">Tilt back to portrait to exit fullscreen</div>
       <div className="vc-call">
         <div className="vc-header">
           <div className="vc-header__left">
@@ -1513,37 +1599,36 @@ export default function VideoCall({ backendUrl = "https://pdf-qna-backend.onrend
             {renderPinnedTile()}
 
             {sharing && screenStream && pinnedId !== "screen" && (
-              // FIX 1: use screenPreviewStream (video-only) for non-pinned screen tile too
               <VideoTile
                 stream={screenStream}
                 previewStream={screenPreviewStream}
                 name={displayName} isLocal isScreen videoOn
                 hasSystemAudio={hasSystemAudio}
                 isPinned={false}
-                onPin={() => setPinnedId("screen")}
-                onUnpin={() => setPinnedId(null)} />
+                onPin={() => pinTile("screen")}
+                onUnpin={unpinTile} />
             )}
 
             <div className="vc-grid" data-count={Math.min(totalCount, 6)}>
               {pinnedId !== "local" && (
                 <VideoTile stream={localStream} name={displayName} isLocal micOn={micOn} videoOn={camOn}
                   isPinned={false}
-                  onPin={() => setPinnedId("local")}
-                  onUnpin={() => setPinnedId(null)} />
+                  onPin={() => pinTile("local")}
+                  onUnpin={unpinTile} />
               )}
               {remotePeerIds.filter(pid => pid !== pinnedId).map(pid => (
                 <VideoTile key={pid} stream={remoteStreams[pid]}
                   name={remoteNames[pid] || pid}
                   micOn videoOn
                   isPinned={false}
-                  onPin={() => setPinnedId(pid)}
-                  onUnpin={() => setPinnedId(null)} />
+                  onPin={() => pinTile(pid)}
+                  onUnpin={unpinTile} />
               ))}
             </div>
 
-            {pinnedId && (
+            {pinnedId && !cssFallbackFullscreen && (
               <div style={{ textAlign: "center", fontSize: 11, color: "var(--text3)", paddingBottom: 4, fontFamily: "'DM Mono', monospace" }}>
-                {isMobile ? "Tilt phone to landscape for fullscreen · tap ✕ to unpin" : "Press Esc or tap ✕ Unpin to return to grid"}
+                {isMobile ? "Tap ✕ Unpin or use back button to exit fullscreen" : "Press Esc or tap ✕ Unpin to return to grid"}
               </div>
             )}
           </div>
